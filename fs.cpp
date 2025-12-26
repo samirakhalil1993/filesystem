@@ -16,26 +16,22 @@ int
 FS::format()
 {
     std::cout << "FS::format()\n";
-    // 1. Markera alla FAT-poster som fria
+    // 1. Nollställ hela FAT: alla block fria
     for (int i = 0; i < BLOCK_SIZE / 2; i++) {
         fat[i] = FAT_FREE;
     }
 
-    // 2. Reservera root och FAT-block
+    // 2. Reservera block 0 (root) och block 1 (FAT)
     fat[ROOT_BLOCK] = FAT_EOF;
     fat[FAT_BLOCK]  = FAT_EOF;
 
-    // 3. Skriv FAT till disk
-    disk.write(FAT_BLOCK, (uint8_t*) fat);
+    // 3. Skriv FAT till disk (block 1)
+    disk.write(FAT_BLOCK, (uint8_t*)fat);
 
-    // 4. Skapa tom root directory
-    dir_entry empty_dir[BLOCK_SIZE / sizeof(dir_entry)];
-    memset(empty_dir, 0, sizeof(empty_dir));
-    disk.write(ROOT_BLOCK, (uint8_t*) empty_dir);
-
-    // 5. Sätt current directory till root
-    cwd_blk = ROOT_BLOCK;
-    cwd_path.clear();
+    // 4. Skapa en helt tom root directory i block 0
+    dir_entry root_dir[BLOCK_SIZE / sizeof(dir_entry)];
+    memset(root_dir, 0, sizeof(root_dir));
+    disk.write(ROOT_BLOCK, (uint8_t*)root_dir);
     return 0;
 }
 
