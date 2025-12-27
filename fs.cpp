@@ -114,7 +114,7 @@ int FS::create(std::string filepath)
     for (int i = 0; i < blocks.size(); i++)
     {
         uint8_t buf[BLOCK_SIZE] = {0};
-        memcpy(buf, 
+        memcpy(buf,
                data.data() + i * BLOCK_SIZE,
                std::min(BLOCK_SIZE, size - i * BLOCK_SIZE));
         disk.write(blocks[i], buf);
@@ -137,7 +137,47 @@ int FS::create(std::string filepath)
 
 // cat <filepath> reads the content of a file and prints it on the screen
 int FS::cat(std::string filepath)
-{   
+{
+    // 1. Läs root directory
+    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
+    disk.read(ROOT_BLOCK, (uint8_t *)dir);
+
+    // 2. Hitta filen
+    int idx = -1;
+    for (int i = 0; i < 64; i++)
+    {
+        if (dir[i].file_name[0] != '\0' &&
+            strcmp(dir[i].file_name, filepath.c_str()) == 0)
+        {
+            idx = i;
+            break;
+        }
+    }
+
+    if (idx == -1)
+    {
+        std::cout << "File not found\n";
+        return -1;
+    }
+
+    // 3. Läs FAT
+    disk.read(FAT_BLOCK, (uint8_t *)fat);
+
+    int cur = dir[idx].first_blk;
+    int remaining = dir[idx].size;
+
+    // 4. Läs block för block och följ FAT-kedjan
+    while (cur != FAT_EOF && remaining > 0)
+    {
+        uint8_t buf[BLOCK_SIZE];
+        disk.read(cur, buf);
+
+        int n = std::min(BLOCK_SIZE, remaining);
+        std::cout.write((char *)buf, n);
+
+        remaining -= n;
+        cur = fat[cur]; // hoppa till nästa block i kedjan
+    }
 
     // std::cout << "FS::cat(" << filepath << ")\n";
     return 0;
@@ -146,7 +186,7 @@ int FS::cat(std::string filepath)
 // ls lists the content in the current directory (files and sub-directories)
 int FS::ls()
 {
-    std::cout << "FS::ls()\n";
+    // std::cout << "FS::ls()\n";
     return 0;
 }
 
