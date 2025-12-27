@@ -42,6 +42,12 @@ int FS::format()
 // written on the following rows (ended with an empty row)
 int FS::create(std::string filepath)
 {
+    if (filepath.length() > 55)
+    {
+        std::cout << "File name too long\n";
+        return -1;
+    }
+
     // 1. Läs root directory
     dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
     disk.read(ROOT_BLOCK, (uint8_t *)dir);
@@ -195,15 +201,13 @@ int FS::ls()
 
     // 3. Loopa igenom alla directory-entries
     for (int i = 0; i < 64; i++)
-{
-    if (dir[i].file_name[0] != '\0')
     {
-        std::cout << dir[i].file_name << "\t "
-                  << dir[i].size << "\n";
+        if (dir[i].file_name[0] != '\0')
+        {
+            std::cout << dir[i].file_name << "\t "
+                      << dir[i].size << "\n";
+        }
     }
-}
-
-
 
     // std::cout << "FS::ls()\n";
     return 0;
