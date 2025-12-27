@@ -38,7 +38,7 @@ int FS::format()
     return 0;
 }
 
-// create <filepath> creates a new file on the disk, the data content is
+//  create <filepath> creates a new file on the disk, the data content is
 // written on the following rows (ended with an empty row)
 int FS::create(std::string filepath)
 {
