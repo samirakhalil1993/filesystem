@@ -16,7 +16,7 @@ int
 FS::format()
 {
     std::cout << "FS::format()\n";
-     // 1. test Markera alla FAT-poster som fria
+     // 1. test1 Markera alla FAT-poster som fria
     for (int i = 0; i < BLOCK_SIZE / 2; i++) {
         fat[i] = FAT_FREE;
     }
