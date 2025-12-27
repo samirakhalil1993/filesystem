@@ -186,6 +186,25 @@ int FS::cat(std::string filepath)
 // ls lists the content in the current directory (files and sub-directories)
 int FS::ls()
 {
+    // 1. Läs root directory
+    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
+    disk.read(ROOT_BLOCK, (uint8_t *)dir);
+
+    // 2.Skriv rubriken
+    std::cout << "name\t size\n";
+
+    // 3. Loopa igenom alla directory-entries
+    for (int i = 0; i < 64; i++)
+{
+    if (dir[i].file_name[0] != '\0')
+    {
+        std::cout << dir[i].file_name << "\t "
+                  << dir[i].size << "\n";
+    }
+}
+
+
+
     // std::cout << "FS::ls()\n";
     return 0;
 }
