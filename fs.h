@@ -2,6 +2,8 @@
 #include <cstdint>
 #include "disk.h"
 
+#include <vector>
+
 #ifndef __FS_H__
 #define __FS_H__
 

@@ -634,7 +634,33 @@ int FS::mkdir(std::string dirpath)
 // cd <dirpath> changes the current (working) directory to the directory named <dirpath>
 int FS::cd(std::string dirpath)
 {
-    std::cout << "FS::cd(" << dirpath << ")\n";
+    std::string dirname = dirpath;
+    // 1. read current directory
+    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
+    disk.read(cwd_blk, (uint8_t *)dir);
+
+    // 2. find directory entry
+    for (int i = 0; i < 64; i++)
+    {
+        if (dir[i].file_name[0] != '\0' &&
+            strcmp(dir[i].file_name, dirname.c_str()) == 0)
+        {
+            // must be a directory
+            if (dir[i].type != TYPE_DIR)
+            {
+                std::cout << "Not a directory\n";
+                return -1;
+            }
+
+            // 3. change current directory
+            cwd_blk = dir[i].first_blk;
+            return 0;
+        }
+    }
+
+    std::cout << "Directory not found\n";
+    return -1;
+    // std::cout << "FS::cd(" << dirpath << ")\n";
     return 0;
 }
 
