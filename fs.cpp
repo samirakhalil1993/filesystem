@@ -217,7 +217,118 @@ int FS::ls()
 // <sourcepath> to a new file <destpath>
 int FS::cp(std::string sourcepath, std::string destpath)
 {
-    std::cout << "FS::cp(" << sourcepath << "," << destpath << ")\n";
+    // 1. Läs root directory
+    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
+    disk.read(ROOT_BLOCK, (uint8_t *)dir);
+
+    // 2. hitta source-filen
+    int src = -1;
+    for (int i = 0; i < 64; i++)
+    {
+        if (dir[i].file_name[0] != '\0' &&
+            strcmp(dir[i].file_name, sourcepath.c_str()) == 0)
+        {
+            src = i;
+            break;
+        }
+    }
+
+    if (src == -1)
+    {
+        std::cout << "Source file not found\n";
+        return -1;
+    }
+
+    // 3. kolla att dest INTE finns.
+    for (int i = 0; i < 64; i++)
+    {
+        if (dir[i].file_name[0] != '\0' &&
+            strcmp(dir[i].file_name, destpath.c_str()) == 0)
+        {
+            std::cout << "Destination already exists\n";
+            return -1;
+        }
+    }
+    // 4. hitta en ledig post i root directory
+    int free_index = -1;
+    for (int i = 0; i < 64; i++)
+    {
+        if (dir[i].file_name[0] == '\0')
+        {
+            free_index = i;
+            break;
+        }
+    }
+
+    if (free_index == -1)
+    {
+        std::cout << "Directory full\n";
+        return -1;
+    }
+    // 5. läs FAT
+    disk.read(FAT_BLOCK, (uint8_t *)fat);
+
+    // 6. läs in source-filens data
+    int size = dir[src].size;
+    std::vector<uint8_t> data(size);
+
+    int current = dir[src].first_blk;
+    int offset = 0;
+
+    while (current != FAT_EOF)
+    {
+        uint8_t buf[BLOCK_SIZE];
+        disk.read(current, buf);
+
+        int n = std::min(BLOCK_SIZE, size - offset);
+        memcpy(&data[offset], buf, n);
+
+        offset += n;
+        current = fat[current];
+    }
+    // 7. räkna ut antal block som behövs
+    int blocks_needed = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    // 8. hitta lediga block i FAT
+    std::vector<int> blocks;
+    for (int i = 2; i < BLOCK_SIZE / 2 && blocks.size() < blocks_needed; i++)
+    {
+        if (fat[i] == FAT_FREE)
+            blocks.push_back(i);
+    }
+
+    if (blocks.size() < blocks_needed)
+    {
+        std::cout << "Not enough disk space\n";
+        return -1;
+    }
+    // 9. länka FAT-kedjan
+    for (int i = 0; i < blocks.size() - 1; i++)
+        fat[blocks[i]] = blocks[i + 1];
+
+    fat[blocks.back()] = FAT_EOF;
+
+    // 10. skriv data till nya block
+    for (int i = 0; i < blocks.size(); i++)
+    {
+        uint8_t buf[BLOCK_SIZE] = {0};
+        memcpy(buf, &data[i * BLOCK_SIZE],
+               std::min(BLOCK_SIZE, size - i * BLOCK_SIZE));
+        disk.write(blocks[i], buf);
+    }
+
+    // 11. skapa directory entry för nya filen
+    strncpy(dir[free_index].file_name, destpath.c_str(), 55);
+    dir[free_index].file_name[55] = '\0';
+    dir[free_index].size = size;
+    dir[free_index].first_blk = blocks[0];
+    dir[free_index].type = TYPE_FILE;
+
+    // 12. skriv tillbaka FAT och root directory till disken
+    disk.write(ROOT_BLOCK, (uint8_t *)dir);
+    disk.write(FAT_BLOCK, (uint8_t *)fat);
+
+    // std::cout << "FS::cp(" << sourcepath << "," << destpath << ")\n";
     return 0;
 }
 
