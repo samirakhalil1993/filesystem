@@ -336,7 +336,45 @@ int FS::cp(std::string sourcepath, std::string destpath)
 // or moves the file <sourcepath> to the directory <destpath> (if dest is a directory)
 int FS::mv(std::string sourcepath, std::string destpath)
 {
-    std::cout << "FS::mv(" << sourcepath << "," << destpath << ")\n";
+    // 1) Read root directory
+    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
+    disk.read(ROOT_BLOCK, (uint8_t *)dir);
+
+    // 2) Find source
+    int src = -1;
+    for (int i = 0; i < 64; i++)
+    {
+        if (dir[i].file_name[0] != '\0' &&
+            strcmp(dir[i].file_name, sourcepath.c_str()) == 0)
+        {
+            src = i;
+            break;
+        }
+    }
+    if (src == -1)
+    {
+        std::cout << "File not found\n";
+        return -1;
+    }
+
+    // 3) Check noclobber: dest must NOT exist
+    for (int i = 0; i < 64; i++)
+    {
+        if (dir[i].file_name[0] != '\0' &&
+            strcmp(dir[i].file_name, destpath.c_str()) == 0)
+        {
+            std::cout << "File already exists\n";
+            return -2;
+        }
+    }
+
+    // 4) Rename (metadata only)
+    strncpy(dir[src].file_name, destpath.c_str(), 55);
+    dir[src].file_name[55] = '\0';
+
+    // 5) Write back directory
+    disk.write(ROOT_BLOCK, (uint8_t *)dir);
+    // std::cout << "FS::mv(" << sourcepath << "," << destpath << ")\n";
     return 0;
 }
 
