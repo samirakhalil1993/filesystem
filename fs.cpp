@@ -381,7 +381,45 @@ int FS::mv(std::string sourcepath, std::string destpath)
 // rm <filepath> removes / deletes the file <filepath>
 int FS::rm(std::string filepath)
 {
-    std::cout << "FS::rm(" << filepath << ")\n";
+    // 1) Läs root directory
+    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
+    disk.read(ROOT_BLOCK, (uint8_t *)dir);
+
+    // 2) Hitta filen
+    int idx = -1;
+    for (int i = 0; i < 64; i++)
+    {
+        if (dir[i].file_name[0] != '\0' &&
+            strcmp(dir[i].file_name, filepath.c_str()) == 0)
+        {
+            idx = i;
+            break;
+        }
+    }
+    if (idx == -1)
+    {
+        std::cout << "File not found\n";
+        return -1;
+    }
+
+    // 3) Läs FAT och frigör block
+    disk.read(FAT_BLOCK, (uint8_t *)fat);
+
+    int cur = dir[idx].first_blk;
+    while (cur != FAT_EOF)
+    {
+        int next = fat[cur];
+        fat[cur] = FAT_FREE;
+        cur = next;
+    }
+
+    // 4) Rensa directory entry
+    memset(&dir[idx], 0, sizeof(dir_entry));
+
+    // 5) Skriv tillbaka FAT och root directory till disken
+    disk.write(ROOT_BLOCK, (uint8_t *)dir);
+    disk.write(FAT_BLOCK, (uint8_t *)fat);
+    // std::cout << "FS::rm(" << filepath << ")\n";
     return 0;
 }
 
@@ -389,7 +427,113 @@ int FS::rm(std::string filepath)
 // the end of file <filepath2>. The file <filepath1> is unchanged.
 int FS::append(std::string filepath1, std::string filepath2)
 {
-    std::cout << "FS::append(" << filepath1 << "," << filepath2 << ")\n";
+    // 1. read root directory
+    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
+    disk.read(ROOT_BLOCK, (uint8_t *)dir);
+
+    // 2. find file 1 and file 2
+    int src = -1, dst = -1;
+    for (int i = 0; i < 64; i++)
+    {
+        if (dir[i].file_name[0] != '\0')
+        {
+            if (strcmp(dir[i].file_name, filepath1.c_str()) == 0)
+                src = i;
+            if (strcmp(dir[i].file_name, filepath2.c_str()) == 0)
+                dst = i;
+        }
+    }
+    if (src == -1 || dst == -1)
+    {
+        std::cout << "File not found\n";
+        return -1;
+    }
+
+    // 3. read FAT
+    disk.read(FAT_BLOCK, (uint8_t *)fat);
+
+    // 4. read data from file 1
+    int size1 = dir[src].size;
+    std::vector<uint8_t> data1(size1);
+    int current = dir[src].first_blk;
+    int offset = 0;
+    while (current != FAT_EOF)
+    {
+        uint8_t buf[BLOCK_SIZE];
+        disk.read(current, buf);
+
+        int n = std::min(BLOCK_SIZE, size1 - offset);
+        memcpy(&data1[offset], buf, n);
+
+        offset += n;
+        current = fat[current];
+    }
+    // 5. find end of file 2's block
+    int last = dir[dst].first_blk;
+    while (fat[last] != FAT_EOF)
+    {
+        last = fat[last];
+    }
+
+    // 6. read last block of destination file
+    uint8_t last_buf[BLOCK_SIZE];
+    disk.read(last, last_buf);
+
+    // 7. calculate offset in last block
+    int offset2 = dir[dst].size % BLOCK_SIZE;
+
+    // 8. write as much as possible into last block
+    int written = std::min(BLOCK_SIZE - offset2, size1);
+    memcpy(last_buf + offset2, data1.data(), written);
+
+    // 9. write last block back to disk
+    disk.write(last, last_buf);
+
+    int remaining = size1 - written;
+    int pos = written;
+
+    while (remaining > 0)
+    {
+        // find free block
+        int new_blk = -1;
+        for (int i = 2; i < BLOCK_SIZE / 2; i++)
+        {
+            if (fat[i] == FAT_FREE)
+            {
+                new_blk = i;
+                break;
+            }
+        }
+
+        if (new_blk == -1)
+        {
+            std::cout << "Not enough disk space\n";
+            return -1;
+        }
+
+        // link FAT
+        fat[last] = new_blk;
+        fat[new_blk] = FAT_EOF;
+        last = new_blk;
+
+        // write data
+        uint8_t buf[BLOCK_SIZE] = {0};
+        int n = std::min(BLOCK_SIZE, remaining);
+        memcpy(buf, data1.data() + pos, n);
+        disk.write(new_blk, buf);
+
+        pos += n;
+        remaining -= n;
+    }
+    
+    // 10. update directory entry for file 2
+    dir[dst].size += size1;
+
+    // 11. write back FAT and root directory to disk
+    disk.write(FAT_BLOCK, (uint8_t *)fat);
+    disk.write(ROOT_BLOCK, (uint8_t *)dir);
+
+    // std::cout << "FS::append(" << filepath1 << "," << filepath2 << ")\n";
     return 0;
 }
 
