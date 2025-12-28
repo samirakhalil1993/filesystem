@@ -29,6 +29,9 @@ private:
     Disk disk;
     // size of a FAT entry is 2 bytes
     int16_t fat[BLOCK_SIZE/2];
+    uint16_t cwd_blk; // current working directory block number
+    std::vector<std::string> cwd_path; // för pwd (senare)
+
 
 public:
     FS();
