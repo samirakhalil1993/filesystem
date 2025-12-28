@@ -15,25 +15,27 @@ FS::~FS()
 // formats the disk, i.e., creates an empty file system
 int FS::format()
 {
+    
     // 1. Markera alla FAT-poster som fria
     for (int i = 0; i < BLOCK_SIZE / 2; i++)
     {
         fat[i] = FAT_FREE;
     }
-
+    
     // 2. Reservera root (0) och FAT (1)
     fat[ROOT_BLOCK] = FAT_EOF;
     fat[FAT_BLOCK] = FAT_EOF;
-
+    
     // 3. Skriv FAT till disk (block 1)
     disk.write(FAT_BLOCK, (uint8_t *)fat);
-
+    
     // 4. Skapa tom root directory
     uint8_t empty_dir[BLOCK_SIZE] = {0};
-
+    
     // 5. Skriv root directory till disk (block 0)
     disk.write(ROOT_BLOCK, empty_dir);
-
+    
+    cwd_blk = ROOT_BLOCK;
     // std::cout << "FS::format()\n";
     return 0;
 }
@@ -548,33 +550,32 @@ int FS::append(std::string filepath1, std::string filepath2)
 // in the current directory
 int FS::mkdir(std::string dirpath)
 {
-    // 1. read root directory
-    dir_entry root[BLOCK_SIZE / sizeof(dir_entry)];
-    disk.read(ROOT_BLOCK, (uint8_t *)root);
+    // 1. read current directory
+    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
+    disk.read(cwd_blk, (uint8_t *)dir);
 
-    std::string dirname = dirpath;
-    ;
-    if (dirname.length() > 55)
+    if (dirpath.length() > 55)
     {
         std::cout << "Directory name too long\n";
         return -1;
     }
+
     // 2. check if name already exists
     for (int i = 0; i < 64; i++)
     {
-        if (root[i].file_name[0] != '\0' &&
-            strcmp(root[i].file_name, dirname.c_str()) == 0)
+        if (dir[i].file_name[0] != '\0' &&
+            strcmp(dir[i].file_name, dirpath.c_str()) == 0)
         {
             std::cout << "Directory already exists\n";
             return -1;
         }
     }
 
-    // 3. find free directory entry in root
+    // 3. find free directory entry
     int free_idx = -1;
     for (int i = 0; i < 64; i++)
     {
-        if (root[i].file_name[0] == '\0')
+        if (dir[i].file_name[0] == '\0')
         {
             free_idx = i;
             break;
@@ -590,13 +591,14 @@ int FS::mkdir(std::string dirpath)
     // 4. read FAT
     disk.read(FAT_BLOCK, (uint8_t *)fat);
 
-    // 5. find free block for new directory
+    // 5. find free block
     int new_blk = -1;
-    for (int i = 2; i < BLOCK_SIZE / 2; i++)
+    for (int i = 2; i < disk.get_no_blocks(); i++)
     {
         if (fat[i] == FAT_FREE)
         {
             new_blk = i;
+            fat[i] = FAT_EOF;
             break;
         }
     }
@@ -607,34 +609,59 @@ int FS::mkdir(std::string dirpath)
         return -1;
     }
 
-    fat[new_blk] = FAT_EOF;
-
     // 6. create new directory block
-    dir_entry newdir[BLOCK_SIZE / sizeof(dir_entry)] = {};
+    dir_entry newdir[BLOCK_SIZE / sizeof(dir_entry)];
+    memset(newdir, 0, BLOCK_SIZE);
 
-    strcpy(newdir[0].file_name, "..");
+    strncpy(newdir[0].file_name, "..", 55);
+    newdir[0].file_name[55] = '\0';
     newdir[0].type = TYPE_DIR;
-    newdir[0].first_blk = ROOT_BLOCK;
+    newdir[0].first_blk = cwd_blk;
 
     disk.write(new_blk, (uint8_t *)newdir);
 
-    // 7. add directory entry to root
-    strncpy(root[free_idx].file_name, dirname.c_str(), 55);
-    root[free_idx].file_name[55] = '\0';
-    root[free_idx].type = TYPE_DIR;
-    root[free_idx].first_blk = new_blk;
+    // 7. add directory entry to current directory
+    strncpy(dir[free_idx].file_name, dirpath.c_str(), 55);
+    dir[free_idx].file_name[55] = '\0';
+    dir[free_idx].type = TYPE_DIR;
+    dir[free_idx].first_blk = new_blk;
 
     // 8. write back
-    disk.write(ROOT_BLOCK, (uint8_t *)root);
+    disk.write(cwd_blk, (uint8_t *)dir);
     disk.write(FAT_BLOCK, (uint8_t *)fat);
-    // std::cout << "FS::mkdir(" << dirpath << ")\n";
+
     return 0;
 }
 
 // cd <dirpath> changes the current (working) directory to the directory named <dirpath>
 int FS::cd(std::string dirpath)
 {
-    std::string dirname = dirpath;
+    if (dirpath == "..")
+    {
+        if (cwd_path.empty())
+        {
+            // redan i root
+            return 0;
+        }
+
+        // gå tillbaka i path
+        cwd_path.pop_back();
+
+        // gå tillbaka på disken via ".."-entry
+        dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
+        disk.read(cwd_blk, (uint8_t *)dir);
+
+        for (int i = 0; i < 64; i++)
+        {
+            if (strcmp(dir[i].file_name, "..") == 0)
+            {
+                cwd_blk = dir[i].first_blk;
+                return 0;
+            }
+        }
+
+        return -1;
+    }
     // 1. read current directory
     dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
     disk.read(cwd_blk, (uint8_t *)dir);
@@ -643,7 +670,7 @@ int FS::cd(std::string dirpath)
     for (int i = 0; i < 64; i++)
     {
         if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, dirname.c_str()) == 0)
+            strcmp(dir[i].file_name, dirpath.c_str()) == 0)
         {
             // must be a directory
             if (dir[i].type != TYPE_DIR)
@@ -654,6 +681,9 @@ int FS::cd(std::string dirpath)
 
             // 3. change current directory
             cwd_blk = dir[i].first_blk;
+            cwd_path.push_back(dirpath);
+            return 0;
+
             return 0;
         }
     }
@@ -668,7 +698,22 @@ int FS::cd(std::string dirpath)
 // directory, including the currect directory name
 int FS::pwd()
 {
-    std::cout << "FS::pwd()\n";
+    if (cwd_path.empty())
+    {
+        std::cout << "/" << std::endl;
+        return 0;
+    }
+
+    std::cout << "/";
+    for (size_t i = 0; i < cwd_path.size(); i++)
+    {
+        std::cout << cwd_path[i];
+        if (i + 1 < cwd_path.size())
+            std::cout << "/";
+    }
+    std::cout << std::endl;
+
+    // std::cout << "FS::pwd()\n";
     return 0;
 }
 
