@@ -192,19 +192,26 @@ int FS::cat(std::string filepath)
 // ls lists the content in the current directory (files and sub-directories)
 int FS::ls()
 {
-    // 1. Läs root directory
     dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
     disk.read(ROOT_BLOCK, (uint8_t *)dir);
 
-    // 2.Skriv rubriken
-    std::cout << "name\t size\n";
+    std::cout << "name     type    size\n";
 
-    // 3. Loopa igenom alla directory-entries
+    // 1. print directories first
     for (int i = 0; i < 64; i++)
     {
-        if (dir[i].file_name[0] != '\0')
+        if (dir[i].file_name[0] != '\0' && dir[i].type == TYPE_DIR)
         {
-            std::cout << dir[i].file_name << "\t "
+            std::cout << dir[i].file_name << "    dir     -\n";
+        }
+    }
+
+    // 2. print files
+    for (int i = 0; i < 64; i++)
+    {
+        if (dir[i].file_name[0] != '\0' && dir[i].type == TYPE_FILE)
+        {
+            std::cout << dir[i].file_name << "    file    "
                       << dir[i].size << "\n";
         }
     }
@@ -525,7 +532,7 @@ int FS::append(std::string filepath1, std::string filepath2)
         pos += n;
         remaining -= n;
     }
-    
+
     // 10. update directory entry for file 2
     dir[dst].size += size1;
 
@@ -541,7 +548,86 @@ int FS::append(std::string filepath1, std::string filepath2)
 // in the current directory
 int FS::mkdir(std::string dirpath)
 {
-    std::cout << "FS::mkdir(" << dirpath << ")\n";
+    // 1. read root directory
+    dir_entry root[BLOCK_SIZE / sizeof(dir_entry)];
+    disk.read(ROOT_BLOCK, (uint8_t *)root);
+
+    std::string dirname = dirpath;
+    ;
+    if (dirname.length() > 55)
+    {
+        std::cout << "Directory name too long\n";
+        return -1;
+    }
+    // 2. check if name already exists
+    for (int i = 0; i < 64; i++)
+    {
+        if (root[i].file_name[0] != '\0' &&
+            strcmp(root[i].file_name, dirname.c_str()) == 0)
+        {
+            std::cout << "Directory already exists\n";
+            return -1;
+        }
+    }
+
+    // 3. find free directory entry in root
+    int free_idx = -1;
+    for (int i = 0; i < 64; i++)
+    {
+        if (root[i].file_name[0] == '\0')
+        {
+            free_idx = i;
+            break;
+        }
+    }
+
+    if (free_idx == -1)
+    {
+        std::cout << "Directory full\n";
+        return -1;
+    }
+
+    // 4. read FAT
+    disk.read(FAT_BLOCK, (uint8_t *)fat);
+
+    // 5. find free block for new directory
+    int new_blk = -1;
+    for (int i = 2; i < BLOCK_SIZE / 2; i++)
+    {
+        if (fat[i] == FAT_FREE)
+        {
+            new_blk = i;
+            break;
+        }
+    }
+
+    if (new_blk == -1)
+    {
+        std::cout << "No free blocks\n";
+        return -1;
+    }
+
+    fat[new_blk] = FAT_EOF;
+
+    // 6. create new directory block
+    dir_entry newdir[BLOCK_SIZE / sizeof(dir_entry)] = {};
+
+    strcpy(newdir[0].file_name, "..");
+    newdir[0].type = TYPE_DIR;
+    newdir[0].first_blk = ROOT_BLOCK;
+
+    disk.write(new_blk, (uint8_t *)newdir);
+
+    // 7. add directory entry to root
+    strncpy(root[free_idx].file_name, dirname.c_str(), 55);
+    root[free_idx].file_name[55] = '\0';
+    root[free_idx].type = TYPE_DIR;
+    root[free_idx].first_blk = new_blk;
+
+    // 8. write back
+    disk.write(ROOT_BLOCK, (uint8_t *)root);
+    disk.write(FAT_BLOCK, (uint8_t *)fat);
+    // std::cout << "FS::mkdir(" << dirpath << ")\n";
     return 0;
 }
 
