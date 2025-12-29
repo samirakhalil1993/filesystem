@@ -237,37 +237,44 @@ int FS::cat(std::string path)
     int parent;
     std::string name;
 
-    // 1. Resolve path
+    // 1. resolve path
     if (!resolvePath(path, parent, name))
     {
         std::cout << "File not found\n";
         return -1;
     }
 
-    // 2. Läs parent directory
+    // 2. read parent directory
     dir_entry dir[max];
     disk.read(parent, (uint8_t*)dir);
 
-    // 3. Leta upp filen
+    // 3. find file
     for (int i = 0; i < max; i++)
     {
         if (dir[i].file_name[0] != '\0' &&
             strcmp(dir[i].file_name, name.c_str()) == 0)
         {
-            // 4. Kontrollera att det är en fil
+            // must be a file
             if (dir[i].type == TYPE_DIR)
             {
                 std::cout << "Not a file\n";
                 return -1;
             }
 
-            // 5. Läs FAT
+            // 4. check READ permission
+            if (!(dir[i].access_rights & READ))
+            {
+                std::cout << "Permission denied\n";
+                return -1;
+            }
+
+            // 5. read FAT
             disk.read(FAT_BLOCK, (uint8_t*)fat);
 
             int cur = dir[i].first_blk;
             int remaining = dir[i].size;
 
-            // 6. Läs block för block
+            // 6. read blocks
             while (cur != FAT_EOF && remaining > 0)
             {
                 uint8_t buf[BLOCK_SIZE];
@@ -294,38 +301,41 @@ int FS::ls()
     int max = BLOCK_SIZE / sizeof(dir_entry);
 
     dir_entry dir[max];
-    disk.read(cwd_blk, (uint8_t *)dir);
+    disk.read(cwd_blk, (uint8_t*)dir);
 
-    std::cout << "name     type    size\n";
+    std::cout << "name type accessrights size\n";
 
-    // 1. print directories first
     for (int i = 0; i < max; i++)
     {
-        if (dir[i].file_name[0] != '\0' &&
-            dir[i].type == TYPE_DIR)
-        {
-            // skip internal entries
-            if (strcmp(dir[i].file_name, "..") == 0)
-                continue;
+        if (dir[i].file_name[0] == '\0')
+            continue;
 
-            std::cout << dir[i].file_name
-                      << "    dir     -\n";
-        }
+        // name
+        std::cout << dir[i].file_name << " ";
+
+        // type
+        if (dir[i].type == TYPE_DIR)
+            std::cout << "dir ";
+        else
+            std::cout << "file ";
+
+        // access rights (rwx)
+        uint8_t r = dir[i].access_rights;
+        std::cout
+            << ((r & READ)    ? 'r' : '-')
+            << ((r & WRITE)   ? 'w' : '-')
+            << ((r & EXECUTE) ? 'x' : '-')
+            << " ";
+
+        // size
+        if (dir[i].type == TYPE_DIR)
+            std::cout << "-";
+        else
+            std::cout << dir[i].size;
+
+        std::cout << "\n";
     }
 
-    // 2. print files
-    for (int i = 0; i < max; i++)
-    {
-        if (dir[i].file_name[0] != '\0' &&
-            dir[i].type == TYPE_FILE)
-        {
-            std::cout << dir[i].file_name
-                      << "    file    "
-                      << dir[i].size << "\n";
-        }
-    }
-
-    // std::cout << "FS::ls()\n";
     return 0;
 }
 
@@ -875,30 +885,38 @@ int FS::cd(std::string path)
     int parent;
     std::string name;
 
-    // 1. Resolve path
+    // 1. resolve path
     if (!resolvePath(path, parent, name))
     {
         std::cout << "Directory not found\n";
         return -1;
     }
 
-    // 2. Läs parent directory
+    // 2. read parent directory
     dir_entry dir[max];
     disk.read(parent, (uint8_t*)dir);
 
-    // 3. Leta upp målet
+    // 3. find directory entry
     for (int i = 0; i < max; i++)
     {
         if (dir[i].file_name[0] != '\0' &&
             strcmp(dir[i].file_name, name.c_str()) == 0)
         {
+            // must be directory
             if (dir[i].type != TYPE_DIR)
             {
                 std::cout << "Not a directory\n";
                 return -1;
             }
 
-            // 4. Uppdatera current directory
+            // 4. check EXECUTE permission
+            if (!(dir[i].access_rights & EXECUTE))
+            {
+                std::cout << "Permission denied\n";
+                return -1;
+            }
+
+            // 5. change current directory
             cwd_blk = dir[i].first_blk;
             return 0;
         }
@@ -907,6 +925,7 @@ int FS::cd(std::string path)
     std::cout << "Directory not found\n";
     return -1;
 }
+
 
 // pwd prints the full path, i.e., from the root directory, to the current
 // directory, including the currect directory name
