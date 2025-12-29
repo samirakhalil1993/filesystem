@@ -606,6 +606,33 @@ int FS::rm(std::string path)
     dir_entry dir[max];
     disk.read(parent, (uint8_t*)dir);
 
+    // 🔒 NYTT: kontrollera WRITE på parent directory
+    // (vi måste hitta parent entry i dess parent, men root är alltid OK)
+    if (parent != ROOT_BLOCK)
+    {
+        dir_entry pdir[max];
+        int pparent;
+        std::string pname;
+
+        // hitta parent entry för katalogen
+        resolvePath("..", pparent, pname);
+        disk.read(pparent, (uint8_t*)pdir);
+
+        for (int i = 0; i < max; i++)
+        {
+            if (pdir[i].type == TYPE_DIR &&
+                pdir[i].first_blk == parent)
+            {
+                if (!(pdir[i].access_rights & WRITE))
+                {
+                    std::cout << "Permission denied\n";
+                    return -1;
+                }
+                break;
+            }
+        }
+    }
+
     // 3. Hitta entry
     int idx = -1;
     for (int i = 0; i < max; i++)
@@ -621,6 +648,13 @@ int FS::rm(std::string path)
     if (idx == -1)
     {
         std::cout << "File not found\n";
+        return -1;
+    }
+
+    // 🔒 NYTT: kontrollera WRITE på objektet
+    if (!(dir[idx].access_rights & WRITE))
+    {
+        std::cout << "Permission denied\n";
         return -1;
     }
 
@@ -661,6 +695,7 @@ int FS::rm(std::string path)
 
     return 0;
 }
+
 
 // append <filepath1> <filepath2> appends the contents of file <filepath1> to
 // the end of file <filepath2>. The file <filepath1> is unchanged.
