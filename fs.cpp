@@ -230,57 +230,62 @@ int FS::create(std::string filepath)
 }
 
 // cat <filepath> reads the content of a file and prints it on the screen
-int FS::cat(std::string filepath)
+int FS::cat(std::string path)
 {
-    // 1. Läs current directory
-    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
-    disk.read(cwd_blk, (uint8_t *)dir);
+    int max = BLOCK_SIZE / sizeof(dir_entry);
 
-    // 2. Hitta filen i current directory
-    int idx = -1;
-    for (int i = 0; i < BLOCK_SIZE / sizeof(dir_entry); i++)
-    {
-        if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, filepath.c_str()) == 0)
-        {
-            idx = i;
-            break;
-        }
-    }
+    int parent;
+    std::string name;
 
-    if (idx == -1)
+    // 1. Resolve path
+    if (!resolvePath(path, parent, name))
     {
         std::cout << "File not found\n";
         return -1;
     }
 
-    // 3. Om det är en katalog → error
-    if (dir[idx].type == TYPE_DIR)
+    // 2. Läs parent directory
+    dir_entry dir[max];
+    disk.read(parent, (uint8_t*)dir);
+
+    // 3. Leta upp filen
+    for (int i = 0; i < max; i++)
     {
-        std::cout << "Not a file\n";
-        return -1;
+        if (dir[i].file_name[0] != '\0' &&
+            strcmp(dir[i].file_name, name.c_str()) == 0)
+        {
+            // 4. Kontrollera att det är en fil
+            if (dir[i].type == TYPE_DIR)
+            {
+                std::cout << "Not a file\n";
+                return -1;
+            }
+
+            // 5. Läs FAT
+            disk.read(FAT_BLOCK, (uint8_t*)fat);
+
+            int cur = dir[i].first_blk;
+            int remaining = dir[i].size;
+
+            // 6. Läs block för block
+            while (cur != FAT_EOF && remaining > 0)
+            {
+                uint8_t buf[BLOCK_SIZE];
+                disk.read(cur, buf);
+
+                int n = std::min(BLOCK_SIZE, remaining);
+                std::cout.write((char*)buf, n);
+
+                remaining -= n;
+                cur = fat[cur];
+            }
+
+            return 0;
+        }
     }
 
-    // 4. Läs FAT
-    disk.read(FAT_BLOCK, (uint8_t *)fat);
-
-    int cur = dir[idx].first_blk;
-    int remaining = dir[idx].size;
-
-    // 5. Läs block för block
-    while (cur != FAT_EOF && remaining > 0)
-    {
-        uint8_t buf[BLOCK_SIZE];
-        disk.read(cur, buf);
-
-        int n = std::min(BLOCK_SIZE, remaining);
-        std::cout.write((char *)buf, n);
-
-        remaining -= n;
-        cur = fat[cur];
-    }
-
-    return 0;
+    std::cout << "File not found\n";
+    return -1;
 }
 
 // ls lists the content in the current directory (files and sub-directories)
@@ -326,124 +331,103 @@ int FS::ls()
 
 // cp <sourcepath> <destpath> makes an exact copy of the file
 // <sourcepath> to a new file <destpath>
-int FS::cp(std::string sourcepath, std::string destpath)
+int FS::cp(std::string srcpath, std::string dstpath)
 {
-    // 1. Läs root directory
-    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
-    disk.read(cwd_blk, (uint8_t *)dir);
-
     int max = BLOCK_SIZE / sizeof(dir_entry);
 
-    // 2. hitta source-filen
-    int src = -1;
-    for (int i = 0; i < max; i++)
-    {
-        if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, sourcepath.c_str()) == 0)
-        {
-            src = i;
-            break;
-        }
-    }
+    int src_parent;
+    std::string src_name;
 
-    if (src == -1)
+    // 1. Resolve source
+    if (!resolvePath(srcpath, src_parent, src_name))
     {
         std::cout << "Source file not found\n";
         return -1;
     }
 
-    if (dir[src].type != TYPE_FILE)
-    {
-        std::cout << "Source is not a file\n";
-        return -1;
-    }
+    dir_entry src_dir[max];
+    disk.read(src_parent, (uint8_t*)src_dir);
 
-    // 3. kolla att dest INTE finns.
-    int dst = -1;
+    dir_entry *src = nullptr;
     for (int i = 0; i < max; i++)
     {
-        if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, destpath.c_str()) == 0)
+        if (src_dir[i].file_name[0] != '\0' &&
+            strcmp(src_dir[i].file_name, src_name.c_str()) == 0)
         {
-            dst = i;
+            src = &src_dir[i];
             break;
         }
     }
-    // 4. Bestäm mål-katalog
-    dir_entry *target_dir = dir;
-    int target_block = cwd_blk;
 
-    static dir_entry subdir[BLOCK_SIZE / sizeof(dir_entry)];
-
-    if (dst != -1)
+    if (!src || src->type == TYPE_DIR)
     {
-        if (dir[dst].type != TYPE_DIR)
-        {
-            std::cout << "Destination already exists\n";
-            return -1;
-        }
-
-        // destination är katalog
-        target_block = dir[dst].first_blk;
-        disk.read(target_block, (uint8_t *)subdir);
-        target_dir = subdir;
+        std::cout << "Source file not found\n";
+        return -1;
     }
 
-    // 5. Kontrollera om filen redan finns i mål-katalogen
+    // 2. Resolve destination
+    int dst_parent;
+    std::string dst_name;
+
+    if (!resolvePath(dstpath, dst_parent, dst_name))
+    {
+        std::cout << "Destination not found\n";
+        return -1;
+    }
+
+    dir_entry dst_dir[max];
+    disk.read(dst_parent, (uint8_t*)dst_dir);
+
+    // 3. If destination is an existing directory → copy inside it
     for (int i = 0; i < max; i++)
     {
-        if (target_dir[i].file_name[0] != '\0' &&
-            strcmp(target_dir[i].file_name, dir[src].file_name) == 0)
+        if (dst_dir[i].file_name[0] != '\0' &&
+            strcmp(dst_dir[i].file_name, dst_name.c_str()) == 0 &&
+            dst_dir[i].type == TYPE_DIR)
+        {
+            dst_parent = dst_dir[i].first_blk;
+            disk.read(dst_parent, (uint8_t*)dst_dir);
+            dst_name = src_name;
+            break;
+        }
+    }
+
+    // 4. Check noclobber
+    for (int i = 0; i < max; i++)
+    {
+        if (dst_dir[i].file_name[0] != '\0' &&
+            strcmp(dst_dir[i].file_name, dst_name.c_str()) == 0)
         {
             std::cout << "File already exists\n";
             return -1;
         }
     }
 
-    // 6. Hitta ledig directory entry i mål-katalogen
-    int free_index = -1;
+    // 5. Find free entry in destination directory
+    int free_idx = -1;
     for (int i = 0; i < max; i++)
     {
-        if (target_dir[i].file_name[0] == '\0')
+        if (dst_dir[i].file_name[0] == '\0')
         {
-            free_index = i;
+            free_idx = i;
             break;
         }
     }
 
-    if (free_index == -1)
+    if (free_idx == -1)
     {
         std::cout << "Directory full\n";
         return -1;
     }
 
-    // 7. Läs FAT
-    disk.read(FAT_BLOCK, (uint8_t *)fat);
+    // 6. Read FAT
+    disk.read(FAT_BLOCK, (uint8_t*)fat);
 
-    // 8. Läs in source-filens data
-    int size = dir[src].size;
-    std::vector<uint8_t> data(size);
-
-    int cur = dir[src].first_blk;
-    int offset = 0;
-
-    while (cur != FAT_EOF && offset < size)
-    {
-        uint8_t buf[BLOCK_SIZE];
-        disk.read(cur, buf);
-
-        int n = std::min(BLOCK_SIZE, size - offset);
-        memcpy(&data[offset], buf, n);
-
-        offset += n;
-        cur = fat[cur];
-    }
-
-    // 9. Räkna block
+    int size = src->size;
     int blocks_needed = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
     std::vector<int> blocks;
-    for (int i = 2; i < BLOCK_SIZE / 2 && blocks.size() < blocks_needed; i++)
+    for (int i = 2; i < disk.get_no_blocks() && blocks.size() < blocks_needed; i++)
     {
         if (fat[i] == FAT_FREE)
             blocks.push_back(i);
@@ -455,231 +439,217 @@ int FS::cp(std::string sourcepath, std::string destpath)
         return -1;
     }
 
-    // 10. Länka FAT
-    for (int i = 0; i < blocks.size() - 1; i++)
-        fat[blocks[i]] = blocks[i + 1];
-    fat[blocks.back()] = FAT_EOF;
-
-    // 11. Skriv data
+    // 7. Copy data
+    int cur = src->first_blk;
     for (int i = 0; i < blocks.size(); i++)
     {
         uint8_t buf[BLOCK_SIZE] = {0};
-        memcpy(buf,
-               &data[i * BLOCK_SIZE],
-               std::min(BLOCK_SIZE, size - i * BLOCK_SIZE));
+        disk.read(cur, buf);
         disk.write(blocks[i], buf);
+        fat[blocks[i]] = (i + 1 < blocks.size()) ? blocks[i + 1] : FAT_EOF;
+        cur = fat[cur];
     }
 
-    // 12. Skapa directory entry
-    strncpy(target_dir[free_index].file_name,
-            dir[src].file_name, 55);
-    target_dir[free_index].file_name[55] = '\0';
-    target_dir[free_index].size = size;
-    target_dir[free_index].first_blk = blocks[0];
-    target_dir[free_index].type = TYPE_FILE;
+    // 8. Create new directory entry
+    strncpy(dst_dir[free_idx].file_name, dst_name.c_str(), 55);
+    dst_dir[free_idx].file_name[55] = '\0';
+    dst_dir[free_idx].type = TYPE_FILE;
+    dst_dir[free_idx].size = size;
+    dst_dir[free_idx].first_blk = blocks[0];
 
-    // 13. Skriv tillbaka
-    disk.write(target_block, (uint8_t *)target_dir);
-    disk.write(FAT_BLOCK, (uint8_t *)fat);
-    // std::cout << "FS::cp(" << sourcepath << "," << destpath << ")\n";
+    // 9. Write back
+    disk.write(dst_parent, (uint8_t*)dst_dir);
+    disk.write(FAT_BLOCK, (uint8_t*)fat);
+
     return 0;
 }
 
 // mv <sourcepath> <destpath> renames the file <sourcepath> to the name <destpath>,
 // or moves the file <sourcepath> to the directory <destpath> (if dest is a directory)
-int FS::mv(std::string sourcepath, std::string destpath)
+int FS::mv(std::string srcpath, std::string dstpath)
 {
     int max = BLOCK_SIZE / sizeof(dir_entry);
 
-    // 1. Läs current directory
-    dir_entry dir[max];
-    disk.read(cwd_blk, (uint8_t *)dir);
+    /* ---------- resolve source ---------- */
+    int src_parent;
+    std::string src_name;
 
-    // 2. Hitta source
-    int src = -1;
-    for (int i = 0; i < max; i++)
-    {
-        if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, sourcepath.c_str()) == 0)
-        {
-            src = i;
-            break;
-        }
-    }
-
-    if (src == -1)
+    if (!resolvePath(srcpath, src_parent, src_name))
     {
         std::cout << "File not found\n";
         return -1;
     }
 
-    if (dir[src].type != TYPE_FILE)
-    {
-        std::cout << "Not a file\n";
-        return -1;
-    }
+    dir_entry src_dir[max];
+    disk.read(src_parent, (uint8_t*)src_dir);
 
-    // 3. Leta destination i current directory
-    int dst = -1;
+    int src_idx = -1;
     for (int i = 0; i < max; i++)
     {
-        if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, destpath.c_str()) == 0)
+        if (src_dir[i].file_name[0] != '\0' &&
+            strcmp(src_dir[i].file_name, src_name.c_str()) == 0)
         {
-            dst = i;
+            src_idx = i;
             break;
         }
     }
 
-    /* -------------------------
-       FALL A: dest är katalog
-       ------------------------- */
-    if (dst != -1 && dir[dst].type == TYPE_DIR)
+    if (src_idx == -1)
     {
-        int dst_block = dir[dst].first_blk;
+        std::cout << "File not found\n";
+        return -1;
+    }
 
-        dir_entry dst_dir[max];
-        disk.read(dst_block, (uint8_t *)dst_dir);
+    if (src_dir[src_idx].type == TYPE_DIR)
+    {
+        std::cout << "Cannot move directory\n";
+        return -1;
+    }
 
-        // Finns filen redan där?
-        for (int i = 0; i < max; i++)
+    /* ---------- resolve destination ---------- */
+    int dst_parent;
+    std::string dst_name;
+
+    if (!resolvePath(dstpath, dst_parent, dst_name))
+    {
+        std::cout << "Destination not found\n";
+        return -1;
+    }
+
+    dir_entry dst_dir[max];
+    disk.read(dst_parent, (uint8_t*)dst_dir);
+
+    /* ---------- check if destination is a directory ---------- */
+    for (int i = 0; i < max; i++)
+    {
+        if (dst_dir[i].file_name[0] != '\0' &&
+            strcmp(dst_dir[i].file_name, dst_name.c_str()) == 0 &&
+            dst_dir[i].type == TYPE_DIR)
         {
-            if (dst_dir[i].file_name[0] != '\0' &&
-                strcmp(dst_dir[i].file_name, dir[src].file_name) == 0)
-            {
-                std::cout << "File already exists\n";
-                return -1;
-            }
+            // flytt till katalog
+            dst_parent = dst_dir[i].first_blk;
+            disk.read(dst_parent, (uint8_t*)dst_dir);
+            dst_name = src_name;
+            break;
         }
+    }
 
-        // Ledig plats?
-        int free_dst = -1;
-        for (int i = 0; i < max; i++)
+    /* ---------- noclobber ---------- */
+    for (int i = 0; i < max; i++)
+    {
+        if (dst_dir[i].file_name[0] != '\0' &&
+            strcmp(dst_dir[i].file_name, dst_name.c_str()) == 0)
         {
-            if (dst_dir[i].file_name[0] == '\0')
-            {
-                free_dst = i;
-                break;
-            }
-        }
-
-        if (free_dst == -1)
-        {
-            std::cout << "Directory full\n";
+            std::cout << "File already exists\n";
             return -1;
         }
-
-        // Flytta metadata
-        dst_dir[free_dst] = dir[src];
-
-        // Ta bort source
-        memset(&dir[src], 0, sizeof(dir_entry));
-
-        // Skriv tillbaka
-        disk.write(dst_block, (uint8_t *)dst_dir);
-        disk.write(cwd_blk, (uint8_t *)dir);
-
-        return 0;
     }
 
-    /* -------------------------
-       FALL B: dest finns → error
-       ------------------------- */
-    if (dst != -1)
+    /* ---------- hitta ledig plats i destination ---------- */
+    int free_idx = -1;
+    for (int i = 0; i < max; i++)
     {
-        std::cout << "File already exists\n";
-        return -2;
+        if (dst_dir[i].file_name[0] == '\0')
+        {
+            free_idx = i;
+            break;
+        }
     }
 
-    /* -------------------------
-       FALL C: RENAME
-       ------------------------- */
-    strncpy(dir[src].file_name, destpath.c_str(), 55);
-    dir[src].file_name[55] = '\0';
+    if (free_idx == -1)
+    {
+        std::cout << "Directory full\n";
+        return -1;
+    }
 
-    disk.write(cwd_blk, (uint8_t *)dir);
+    /* ---------- flytta directory entry ---------- */
+    dst_dir[free_idx] = src_dir[src_idx];
+
+    strncpy(dst_dir[free_idx].file_name, dst_name.c_str(), 55);
+    dst_dir[free_idx].file_name[55] = '\0';
+
+    memset(&src_dir[src_idx], 0, sizeof(dir_entry));
+
+    /* ---------- write back ---------- */
+    disk.write(src_parent, (uint8_t*)src_dir);
+    disk.write(dst_parent, (uint8_t*)dst_dir);
+
     return 0;
 }
 
 // rm <filepath> removes / deletes the file <filepath>
-int FS::rm(std::string filepath)
+int FS::rm(std::string path)
 {
     int max = BLOCK_SIZE / sizeof(dir_entry);
 
-    // 1) Läs current directory
-    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
-    disk.read(cwd_blk, (uint8_t *)dir);
+    int parent;
+    std::string name;
 
-    // 2) Hitta filen
+    // 1. Resolve path
+    if (!resolvePath(path, parent, name))
+    {
+        std::cout << "File not found\n";
+        return -1;
+    }
+
+    // 2. Läs parent directory
+    dir_entry dir[max];
+    disk.read(parent, (uint8_t*)dir);
+
+    // 3. Hitta entry
     int idx = -1;
-    for (int i = 0; i < 64; i++)
+    for (int i = 0; i < max; i++)
     {
         if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, filepath.c_str()) == 0)
+            strcmp(dir[i].file_name, name.c_str()) == 0)
         {
             idx = i;
             break;
         }
     }
+
     if (idx == -1)
     {
         std::cout << "File not found\n";
         return -1;
     }
 
-    // 3) Läs FAT och frigör block
-    disk.read(FAT_BLOCK, (uint8_t *)fat);
-
-    /* =========================
-       FALL 1: TA BORT FIL
-       ========================= */
-    if (dir[idx].type == TYPE_FILE)
-    {
-        int cur = dir[idx].first_blk;
-        while (cur != FAT_EOF)
-        {
-            int next = fat[cur];
-            fat[cur] = FAT_FREE;
-            cur = next;
-        }
-
-        memset(&dir[idx], 0, sizeof(dir_entry));
-        disk.write(cwd_blk, (uint8_t *)dir);
-        disk.write(FAT_BLOCK, (uint8_t *)fat);
-        return 0;
-    }
-
-    /* =========================
-       FALL 2: TA BORT TOM KATALOG
-       ========================= */
+    // 4. Om katalog: kontrollera att den är tom
     if (dir[idx].type == TYPE_DIR)
     {
-        dir_entry subdir[max];
-        disk.read(dir[idx].first_blk, (uint8_t *)subdir);
+        dir_entry sub[max];
+        disk.read(dir[idx].first_blk, (uint8_t*)sub);
 
-        // Kontrollera att katalogen är tom
         for (int i = 0; i < max; i++)
         {
-            if (subdir[i].file_name[0] != '\0' &&
-                strcmp(subdir[i].file_name, "..") != 0)
+            if (sub[i].file_name[0] != '\0' &&
+                strcmp(sub[i].file_name, "..") != 0)
             {
                 std::cout << "Directory not empty\n";
                 return -1;
             }
         }
-
-        // Frigör katalogens block
-        fat[dir[idx].first_blk] = FAT_FREE;
-
-        // Ta bort directory entry
-        memset(&dir[idx], 0, sizeof(dir_entry));
-
-        disk.write(cwd_blk, (uint8_t *)dir);
-        disk.write(FAT_BLOCK, (uint8_t *)fat);
-        return 0;
     }
 
-    return -1;
+    // 5. Läs FAT och frigör block
+    disk.read(FAT_BLOCK, (uint8_t*)fat);
+
+    int cur = dir[idx].first_blk;
+    while (cur != FAT_EOF)
+    {
+        int next = fat[cur];
+        fat[cur] = FAT_FREE;
+        cur = next;
+    }
+
+    // 6. Rensa directory entry
+    memset(&dir[idx], 0, sizeof(dir_entry));
+
+    // 7. Skriv tillbaka
+    disk.write(parent, (uint8_t*)dir);
+    disk.write(FAT_BLOCK, (uint8_t*)fat);
+
+    return 0;
 }
 
 // append <filepath1> <filepath2> appends the contents of file <filepath1> to
