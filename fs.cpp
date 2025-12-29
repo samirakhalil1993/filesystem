@@ -410,7 +410,7 @@ int FS::mv(std::string sourcepath, std::string destpath)
 
     // 1. Läs current directory
     dir_entry dir[max];
-    disk.read(cwd_blk, (uint8_t*)dir);
+    disk.read(cwd_blk, (uint8_t *)dir);
 
     // 2. Hitta source
     int src = -1;
@@ -456,7 +456,7 @@ int FS::mv(std::string sourcepath, std::string destpath)
         int dst_block = dir[dst].first_blk;
 
         dir_entry dst_dir[max];
-        disk.read(dst_block, (uint8_t*)dst_dir);
+        disk.read(dst_block, (uint8_t *)dst_dir);
 
         // Finns filen redan där?
         for (int i = 0; i < max; i++)
@@ -493,8 +493,8 @@ int FS::mv(std::string sourcepath, std::string destpath)
         memset(&dir[src], 0, sizeof(dir_entry));
 
         // Skriv tillbaka
-        disk.write(dst_block, (uint8_t*)dst_dir);
-        disk.write(cwd_blk, (uint8_t*)dir);
+        disk.write(dst_block, (uint8_t *)dst_dir);
+        disk.write(cwd_blk, (uint8_t *)dir);
 
         return 0;
     }
@@ -514,16 +514,18 @@ int FS::mv(std::string sourcepath, std::string destpath)
     strncpy(dir[src].file_name, destpath.c_str(), 55);
     dir[src].file_name[55] = '\0';
 
-    disk.write(cwd_blk, (uint8_t*)dir);
+    disk.write(cwd_blk, (uint8_t *)dir);
     return 0;
 }
 
 // rm <filepath> removes / deletes the file <filepath>
 int FS::rm(std::string filepath)
 {
-    // 1) Läs root directory
+    int max = BLOCK_SIZE / sizeof(dir_entry);
+
+    // 1) Läs current directory
     dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
-    disk.read(ROOT_BLOCK, (uint8_t *)dir);
+    disk.read(cwd_blk, (uint8_t *)dir);
 
     // 2) Hitta filen
     int idx = -1;
@@ -545,22 +547,56 @@ int FS::rm(std::string filepath)
     // 3) Läs FAT och frigör block
     disk.read(FAT_BLOCK, (uint8_t *)fat);
 
-    int cur = dir[idx].first_blk;
-    while (cur != FAT_EOF)
+    /* =========================
+       FALL 1: TA BORT FIL
+       ========================= */
+    if (dir[idx].type == TYPE_FILE)
     {
-        int next = fat[cur];
-        fat[cur] = FAT_FREE;
-        cur = next;
+        int cur = dir[idx].first_blk;
+        while (cur != FAT_EOF)
+        {
+            int next = fat[cur];
+            fat[cur] = FAT_FREE;
+            cur = next;
+        }
+
+        memset(&dir[idx], 0, sizeof(dir_entry));
+        disk.write(cwd_blk, (uint8_t *)dir);
+        disk.write(FAT_BLOCK, (uint8_t *)fat);
+        return 0;
     }
 
-    // 4) Rensa directory entry
-    memset(&dir[idx], 0, sizeof(dir_entry));
+    /* =========================
+       FALL 2: TA BORT TOM KATALOG
+       ========================= */
+    if (dir[idx].type == TYPE_DIR)
+    {
+        dir_entry subdir[max];
+        disk.read(dir[idx].first_blk, (uint8_t *)subdir);
 
-    // 5) Skriv tillbaka FAT och root directory till disken
-    disk.write(ROOT_BLOCK, (uint8_t *)dir);
-    disk.write(FAT_BLOCK, (uint8_t *)fat);
-    // std::cout << "FS::rm(" << filepath << ")\n";
-    return 0;
+        // Kontrollera att katalogen är tom
+        for (int i = 0; i < max; i++)
+        {
+            if (subdir[i].file_name[0] != '\0' &&
+                strcmp(subdir[i].file_name, "..") != 0)
+            {
+                std::cout << "Directory not empty\n";
+                return -1;
+            }
+        }
+
+        // Frigör katalogens block
+        fat[dir[idx].first_blk] = FAT_FREE;
+
+        // Ta bort directory entry
+        memset(&dir[idx], 0, sizeof(dir_entry));
+
+        disk.write(cwd_blk, (uint8_t *)dir);
+        disk.write(FAT_BLOCK, (uint8_t *)fat);
+        return 0;
+    }
+    
+    return -1;
 }
 
 // append <filepath1> <filepath2> appends the contents of file <filepath1> to
