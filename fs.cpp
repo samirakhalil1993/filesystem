@@ -217,8 +217,7 @@ int FS::ls()
             dir[i].type == TYPE_DIR)
         {
             // skip internal entries
-            if (strcmp(dir[i].file_name, ".") == 0 ||
-                strcmp(dir[i].file_name, "..") == 0)
+            if (strcmp(dir[i].file_name, "..") == 0)
                 continue;
 
             std::cout << dir[i].file_name
@@ -411,7 +410,7 @@ int FS::mv(std::string sourcepath, std::string destpath)
 
     // 1. Läs current directory
     dir_entry dir[max];
-    disk.read(cwd_blk, (uint8_t *)dir);
+    disk.read(cwd_blk, (uint8_t*)dir);
 
     // 2. Hitta source
     int src = -1;
@@ -431,24 +430,91 @@ int FS::mv(std::string sourcepath, std::string destpath)
         return -1;
     }
 
-    // 3. Noclobber: dest får inte finnas
+    if (dir[src].type != TYPE_FILE)
+    {
+        std::cout << "Not a file\n";
+        return -1;
+    }
+
+    // 3. Leta destination i current directory
+    int dst = -1;
     for (int i = 0; i < max; i++)
     {
         if (dir[i].file_name[0] != '\0' &&
             strcmp(dir[i].file_name, destpath.c_str()) == 0)
         {
-            std::cout << "File already exists\n";
-            return -2;
+            dst = i;
+            break;
         }
     }
 
-    // 4. Rename (endast metadata)
+    /* -------------------------
+       FALL A: dest är katalog
+       ------------------------- */
+    if (dst != -1 && dir[dst].type == TYPE_DIR)
+    {
+        int dst_block = dir[dst].first_blk;
+
+        dir_entry dst_dir[max];
+        disk.read(dst_block, (uint8_t*)dst_dir);
+
+        // Finns filen redan där?
+        for (int i = 0; i < max; i++)
+        {
+            if (dst_dir[i].file_name[0] != '\0' &&
+                strcmp(dst_dir[i].file_name, dir[src].file_name) == 0)
+            {
+                std::cout << "File already exists\n";
+                return -1;
+            }
+        }
+
+        // Ledig plats?
+        int free_dst = -1;
+        for (int i = 0; i < max; i++)
+        {
+            if (dst_dir[i].file_name[0] == '\0')
+            {
+                free_dst = i;
+                break;
+            }
+        }
+
+        if (free_dst == -1)
+        {
+            std::cout << "Directory full\n";
+            return -1;
+        }
+
+        // Flytta metadata
+        dst_dir[free_dst] = dir[src];
+
+        // Ta bort source
+        memset(&dir[src], 0, sizeof(dir_entry));
+
+        // Skriv tillbaka
+        disk.write(dst_block, (uint8_t*)dst_dir);
+        disk.write(cwd_blk, (uint8_t*)dir);
+
+        return 0;
+    }
+
+    /* -------------------------
+       FALL B: dest finns → error
+       ------------------------- */
+    if (dst != -1)
+    {
+        std::cout << "File already exists\n";
+        return -2;
+    }
+
+    /* -------------------------
+       FALL C: RENAME
+       ------------------------- */
     strncpy(dir[src].file_name, destpath.c_str(), 55);
     dir[src].file_name[55] = '\0';
 
-    // 5. Skriv tillbaka directory
-    disk.write(cwd_blk, (uint8_t *)dir);
-
+    disk.write(cwd_blk, (uint8_t*)dir);
     return 0;
 }
 
