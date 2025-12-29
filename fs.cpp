@@ -977,8 +977,46 @@ int FS::pwd()
 
 // chmod <accessrights> <filepath> changes the access rights for the
 // file <filepath> to <accessrights>.
-int FS::chmod(std::string accessrights, std::string filepath)
+int FS::chmod(int accessrights, std::string path)
 {
-    std::cout << "FS::chmod(" << accessrights << "," << filepath << ")\n";
-    return 0;
+    int max = BLOCK_SIZE / sizeof(dir_entry);
+
+    // 1. kontrollera att rättigheterna är giltiga (0–7)
+    if (accessrights < 0 || accessrights > 7)
+    {
+        std::cout << "Invalid access rights\n";
+        return -1;
+    }
+
+    int parent;
+    std::string name;
+
+    // 2. resolve path
+    if (!resolvePath(path, parent, name))
+    {
+        std::cout << "File not found\n";
+        return -1;
+    }
+
+    // 3. läs parent directory
+    dir_entry dir[max];
+    disk.read(parent, (uint8_t*)dir);
+
+    // 4. hitta entry
+    for (int i = 0; i < max; i++)
+    {
+        if (dir[i].file_name[0] != '\0' &&
+            strcmp(dir[i].file_name, name.c_str()) == 0)
+        {
+            // 5. sätt access rights
+            dir[i].access_rights = accessrights;
+
+            // 6. skriv tillbaka
+            disk.write(parent, (uint8_t*)dir);
+            return 0;
+        }
+    }
+
+    std::cout << "File not found\n";
+    return -1;
 }
