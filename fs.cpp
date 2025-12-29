@@ -15,26 +15,26 @@ FS::~FS()
 // formats the disk, i.e., creates an empty file system
 int FS::format()
 {
-    
+
     // 1. Markera alla FAT-poster som fria
     for (int i = 0; i < BLOCK_SIZE / 2; i++)
     {
         fat[i] = FAT_FREE;
     }
-    
+
     // 2. Reservera root (0) och FAT (1)
     fat[ROOT_BLOCK] = FAT_EOF;
     fat[FAT_BLOCK] = FAT_EOF;
-    
+
     // 3. Skriv FAT till disk (block 1)
     disk.write(FAT_BLOCK, (uint8_t *)fat);
-    
+
     // 4. Skapa tom root directory
     uint8_t empty_dir[BLOCK_SIZE] = {0};
-    
+
     // 5. Skriv root directory till disk (block 0)
     disk.write(ROOT_BLOCK, empty_dir);
-    
+
     cwd_blk = ROOT_BLOCK;
     // std::cout << "FS::format()\n";
     return 0;
@@ -50,12 +50,15 @@ int FS::create(std::string filepath)
         return -1;
     }
 
-    // 1. Läs root directory
+    // 1. Läs current directory
+    
     dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
-    disk.read(ROOT_BLOCK, (uint8_t *)dir);
-
+    disk.read(cwd_blk, (uint8_t *)dir);
+    
     // 2. Kolla om filen redan finns
-    for (int i = 0; i < 64; i++)
+    
+    int max = BLOCK_SIZE / sizeof(dir_entry);
+    for (int i = 0; i < max; i++)
     {
         if (strcmp(dir[i].file_name, filepath.c_str()) == 0)
         {
@@ -136,7 +139,7 @@ int FS::create(std::string filepath)
     dir[free_index].type = TYPE_FILE;
 
     // 12. Skriv tillbaka FAT och root directory till disken
-    disk.write(ROOT_BLOCK, (uint8_t *)dir);
+    disk.write(cwd_blk, (uint8_t *)dir);
     disk.write(FAT_BLOCK, (uint8_t *)fat);
 
     // std::cout << "FS::create(" << filepath << ")\n";
@@ -146,13 +149,13 @@ int FS::create(std::string filepath)
 // cat <filepath> reads the content of a file and prints it on the screen
 int FS::cat(std::string filepath)
 {
-    // 1. Läs root directory
+    // 1. Läs current directory
     dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
-    disk.read(ROOT_BLOCK, (uint8_t *)dir);
+    disk.read(cwd_blk, (uint8_t *)dir);
 
-    // 2. Hitta filen
+    // 2. Hitta filen i current directory
     int idx = -1;
-    for (int i = 0; i < 64; i++)
+    for (int i = 0; i < BLOCK_SIZE / sizeof(dir_entry); i++)
     {
         if (dir[i].file_name[0] != '\0' &&
             strcmp(dir[i].file_name, filepath.c_str()) == 0)
@@ -168,13 +171,20 @@ int FS::cat(std::string filepath)
         return -1;
     }
 
-    // 3. Läs FAT
+    // 3. Om det är en katalog → error
+    if (dir[idx].type == TYPE_DIR)
+    {
+        std::cout << "Not a file\n";
+        return -1;
+    }
+
+    // 4. Läs FAT
     disk.read(FAT_BLOCK, (uint8_t *)fat);
 
     int cur = dir[idx].first_blk;
     int remaining = dir[idx].size;
 
-    // 4. Läs block för block och följ FAT-kedjan
+    // 5. Läs block för block
     while (cur != FAT_EOF && remaining > 0)
     {
         uint8_t buf[BLOCK_SIZE];
@@ -184,10 +194,9 @@ int FS::cat(std::string filepath)
         std::cout.write((char *)buf, n);
 
         remaining -= n;
-        cur = fat[cur]; // hoppa till nästa block i kedjan
+        cur = fat[cur];
     }
 
-    // std::cout << "FS::cat(" << filepath << ")\n";
     return 0;
 }
 
@@ -563,10 +572,12 @@ int FS::mkdir(std::string dirpath)
     // 2. check if name already exists
     for (int i = 0; i < 64; i++)
     {
-        if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, dirpath.c_str()) == 0)
+        if (strcmp(dir[i].file_name, dirpath.c_str()) == 0)
         {
-            std::cout << "Directory already exists\n";
+            if (dir[i].type == TYPE_DIR)
+                std::cout << "Directory already exists\n";
+            else
+                std::cout << "File with same name exists\n";
             return -1;
         }
     }
