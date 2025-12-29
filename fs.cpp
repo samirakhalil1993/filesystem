@@ -898,88 +898,112 @@ int FS::mkdir(std::string dirpath)
 }
 
 // cd <dirpath> changes the current (working) directory to the directory named <dirpath>
-int FS::cd(std::string dirpath)
+int FS::cd(std::string path)
 {
-    if (dirpath == "..")
+    int max = BLOCK_SIZE / sizeof(dir_entry);
+
+    int parent;
+    std::string name;
+
+    // 1. Resolve path
+    if (!resolvePath(path, parent, name))
     {
-        if (cwd_path.empty())
-        {
-            // redan i root
-            return 0;
-        }
-
-        // gå tillbaka i path
-        cwd_path.pop_back();
-
-        // gå tillbaka på disken via ".."-entry
-        dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
-        disk.read(cwd_blk, (uint8_t *)dir);
-
-        for (int i = 0; i < 64; i++)
-        {
-            if (strcmp(dir[i].file_name, "..") == 0)
-            {
-                cwd_blk = dir[i].first_blk;
-                return 0;
-            }
-        }
-
+        std::cout << "Directory not found\n";
         return -1;
     }
-    // 1. read current directory
-    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
-    disk.read(cwd_blk, (uint8_t *)dir);
 
-    // 2. find directory entry
-    for (int i = 0; i < 64; i++)
+    // 2. Läs parent directory
+    dir_entry dir[max];
+    disk.read(parent, (uint8_t*)dir);
+
+    // 3. Leta upp målet
+    for (int i = 0; i < max; i++)
     {
         if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, dirpath.c_str()) == 0)
+            strcmp(dir[i].file_name, name.c_str()) == 0)
         {
-            // must be a directory
             if (dir[i].type != TYPE_DIR)
             {
                 std::cout << "Not a directory\n";
                 return -1;
             }
 
-            // 3. change current directory
+            // 4. Uppdatera current directory
             cwd_blk = dir[i].first_blk;
-            cwd_path.push_back(dirpath);
-            return 0;
-
             return 0;
         }
     }
 
     std::cout << "Directory not found\n";
     return -1;
-    // std::cout << "FS::cd(" << dirpath << ")\n";
-    return 0;
 }
 
 // pwd prints the full path, i.e., from the root directory, to the current
 // directory, including the currect directory name
 int FS::pwd()
 {
-    if (cwd_path.empty())
+    int max = BLOCK_SIZE / sizeof(dir_entry);
+
+    // Specialfall: root
+    if (cwd_blk == ROOT_BLOCK)
     {
-        std::cout << "/" << std::endl;
+        std::cout << "/\n";
         return 0;
     }
 
-    std::cout << "/";
-    for (size_t i = 0; i < cwd_path.size(); i++)
+    std::vector<std::string> path;
+    int current = cwd_blk;
+
+    while (current != ROOT_BLOCK)
     {
-        std::cout << cwd_path[i];
-        if (i + 1 < cwd_path.size())
+        dir_entry dir[max];
+        disk.read(current, (uint8_t*)dir);
+
+        int parent = -1;
+
+        // hitta ".."
+        for (int i = 0; i < max; i++)
+        {
+            if (strcmp(dir[i].file_name, "..") == 0)
+            {
+                parent = dir[i].first_blk;
+                break;
+            }
+        }
+
+        if (parent == -1)
+            break;
+
+        // leta upp current i parent för att få namnet
+        dir_entry parent_dir[max];
+        disk.read(parent, (uint8_t*)parent_dir);
+
+        for (int i = 0; i < max; i++)
+        {
+            if (parent_dir[i].type == TYPE_DIR &&
+                parent_dir[i].first_blk == current)
+            {
+                path.push_back(parent_dir[i].file_name);
+                break;
+            }
+        }
+
+        current = parent;
+    }
+
+    // skriv ut path baklänges
+    std::cout << "/";
+    for (int i = path.size() - 1; i >= 0; i--)
+    {
+        std::cout << path[i];
+        if (i > 0)
             std::cout << "/";
     }
-    std::cout << std::endl;
+    std::cout << "\n";
 
-    // std::cout << "FS::pwd()\n";
     return 0;
 }
+
 
 // chmod <accessrights> <filepath> changes the access rights for the
 // file <filepath> to <accessrights>.
