@@ -220,6 +220,7 @@ int FS::create(std::string filepath)
     dir[free_index].size = size;
     dir[free_index].first_blk = blocks[0];
     dir[free_index].type = TYPE_FILE;
+    dir[free_index].access_rights = READ | WRITE; // 0x06
 
     // 12. Skriv tillbaka FAT och root directory till disken
     disk.write(cwd_blk, (uint8_t *)dir);
@@ -246,7 +247,7 @@ int FS::cat(std::string path)
 
     // 2. read parent directory
     dir_entry dir[max];
-    disk.read(parent, (uint8_t*)dir);
+    disk.read(parent, (uint8_t *)dir);
 
     // 3. find file
     for (int i = 0; i < max; i++)
@@ -269,7 +270,7 @@ int FS::cat(std::string path)
             }
 
             // 5. read FAT
-            disk.read(FAT_BLOCK, (uint8_t*)fat);
+            disk.read(FAT_BLOCK, (uint8_t *)fat);
 
             int cur = dir[i].first_blk;
             int remaining = dir[i].size;
@@ -281,7 +282,7 @@ int FS::cat(std::string path)
                 disk.read(cur, buf);
 
                 int n = std::min(BLOCK_SIZE, remaining);
-                std::cout.write((char*)buf, n);
+                std::cout.write((char *)buf, n);
 
                 remaining -= n;
                 cur = fat[cur];
@@ -296,36 +297,45 @@ int FS::cat(std::string path)
 }
 
 // ls lists the content in the current directory (files and sub-directories)
+#include <iomanip>   // högst upp i filen
+
 int FS::ls()
 {
     int max = BLOCK_SIZE / sizeof(dir_entry);
-
     dir_entry dir[max];
     disk.read(cwd_blk, (uint8_t*)dir);
 
-    std::cout << "name type accessrights size\n";
+    std::cout << "name     type    accessrights    size\n";
 
     for (int i = 0; i < max; i++)
     {
         if (dir[i].file_name[0] == '\0')
             continue;
 
-        // name
-        std::cout << dir[i].file_name << " ";
+        std::cout << std::left
+                  << std::setw(9) << dir[i].file_name
+                  << std::setw(8) << (dir[i].type == TYPE_DIR ? "dir" : "file");
 
-        // type
-        if (dir[i].type == TYPE_DIR)
-            std::cout << "dir ";
-        else
-            std::cout << "file ";
-
-        // access rights (rwx)
         uint8_t r = dir[i].access_rights;
-        std::cout
-            << ((r & READ)    ? 'r' : '-')
-            << ((r & WRITE)   ? 'w' : '-')
-            << ((r & EXECUTE) ? 'x' : '-')
-            << " ";
+
+        // access rights
+        if (dir[i].type == TYPE_FILE)
+        {
+            // files: only rw-
+            std::cout
+                << ((r & READ)  ? 'r' : '-')
+                << ((r & WRITE) ? 'w' : '-')
+                << "      ";
+        }
+        else
+        {
+            // directories: rwx
+            std::cout
+                << ((r & READ)    ? 'r' : '-')
+                << ((r & WRITE)   ? 'w' : '-')
+                << ((r & EXECUTE) ? 'x' : '-')
+                << "     ";
+        }
 
         // size
         if (dir[i].type == TYPE_DIR)
@@ -356,7 +366,7 @@ int FS::cp(std::string srcpath, std::string dstpath)
     }
 
     dir_entry src_dir[max];
-    disk.read(src_parent, (uint8_t*)src_dir);
+    disk.read(src_parent, (uint8_t *)src_dir);
 
     dir_entry *src = nullptr;
     for (int i = 0; i < max; i++)
@@ -386,7 +396,7 @@ int FS::cp(std::string srcpath, std::string dstpath)
     }
 
     dir_entry dst_dir[max];
-    disk.read(dst_parent, (uint8_t*)dst_dir);
+    disk.read(dst_parent, (uint8_t *)dst_dir);
 
     // 3. If destination is an existing directory → copy inside it
     for (int i = 0; i < max; i++)
@@ -396,7 +406,7 @@ int FS::cp(std::string srcpath, std::string dstpath)
             dst_dir[i].type == TYPE_DIR)
         {
             dst_parent = dst_dir[i].first_blk;
-            disk.read(dst_parent, (uint8_t*)dst_dir);
+            disk.read(dst_parent, (uint8_t *)dst_dir);
             dst_name = src_name;
             break;
         }
@@ -431,7 +441,7 @@ int FS::cp(std::string srcpath, std::string dstpath)
     }
 
     // 6. Read FAT
-    disk.read(FAT_BLOCK, (uint8_t*)fat);
+    disk.read(FAT_BLOCK, (uint8_t *)fat);
 
     int size = src->size;
     int blocks_needed = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -468,8 +478,8 @@ int FS::cp(std::string srcpath, std::string dstpath)
     dst_dir[free_idx].first_blk = blocks[0];
 
     // 9. Write back
-    disk.write(dst_parent, (uint8_t*)dst_dir);
-    disk.write(FAT_BLOCK, (uint8_t*)fat);
+    disk.write(dst_parent, (uint8_t *)dst_dir);
+    disk.write(FAT_BLOCK, (uint8_t *)fat);
 
     return 0;
 }
@@ -491,7 +501,7 @@ int FS::mv(std::string srcpath, std::string dstpath)
     }
 
     dir_entry src_dir[max];
-    disk.read(src_parent, (uint8_t*)src_dir);
+    disk.read(src_parent, (uint8_t *)src_dir);
 
     int src_idx = -1;
     for (int i = 0; i < max; i++)
@@ -527,7 +537,7 @@ int FS::mv(std::string srcpath, std::string dstpath)
     }
 
     dir_entry dst_dir[max];
-    disk.read(dst_parent, (uint8_t*)dst_dir);
+    disk.read(dst_parent, (uint8_t *)dst_dir);
 
     /* ---------- check if destination is a directory ---------- */
     for (int i = 0; i < max; i++)
@@ -538,7 +548,7 @@ int FS::mv(std::string srcpath, std::string dstpath)
         {
             // flytt till katalog
             dst_parent = dst_dir[i].first_blk;
-            disk.read(dst_parent, (uint8_t*)dst_dir);
+            disk.read(dst_parent, (uint8_t *)dst_dir);
             dst_name = src_name;
             break;
         }
@@ -581,8 +591,8 @@ int FS::mv(std::string srcpath, std::string dstpath)
     memset(&src_dir[src_idx], 0, sizeof(dir_entry));
 
     /* ---------- write back ---------- */
-    disk.write(src_parent, (uint8_t*)src_dir);
-    disk.write(dst_parent, (uint8_t*)dst_dir);
+    disk.write(src_parent, (uint8_t *)src_dir);
+    disk.write(dst_parent, (uint8_t *)dst_dir);
 
     return 0;
 }
@@ -604,7 +614,7 @@ int FS::rm(std::string path)
 
     // 2. Läs parent directory
     dir_entry dir[max];
-    disk.read(parent, (uint8_t*)dir);
+    disk.read(parent, (uint8_t *)dir);
 
     // 🔒 NYTT: kontrollera WRITE på parent directory
     // (vi måste hitta parent entry i dess parent, men root är alltid OK)
@@ -616,7 +626,7 @@ int FS::rm(std::string path)
 
         // hitta parent entry för katalogen
         resolvePath("..", pparent, pname);
-        disk.read(pparent, (uint8_t*)pdir);
+        disk.read(pparent, (uint8_t *)pdir);
 
         for (int i = 0; i < max; i++)
         {
@@ -662,7 +672,7 @@ int FS::rm(std::string path)
     if (dir[idx].type == TYPE_DIR)
     {
         dir_entry sub[max];
-        disk.read(dir[idx].first_blk, (uint8_t*)sub);
+        disk.read(dir[idx].first_blk, (uint8_t *)sub);
 
         for (int i = 0; i < max; i++)
         {
@@ -676,7 +686,7 @@ int FS::rm(std::string path)
     }
 
     // 5. Läs FAT och frigör block
-    disk.read(FAT_BLOCK, (uint8_t*)fat);
+    disk.read(FAT_BLOCK, (uint8_t *)fat);
 
     int cur = dir[idx].first_blk;
     while (cur != FAT_EOF)
@@ -690,36 +700,58 @@ int FS::rm(std::string path)
     memset(&dir[idx], 0, sizeof(dir_entry));
 
     // 7. Skriv tillbaka
-    disk.write(parent, (uint8_t*)dir);
-    disk.write(FAT_BLOCK, (uint8_t*)fat);
+    disk.write(parent, (uint8_t *)dir);
+    disk.write(FAT_BLOCK, (uint8_t *)fat);
 
     return 0;
 }
-
 
 // append <filepath1> <filepath2> appends the contents of file <filepath1> to
 // the end of file <filepath2>. The file <filepath1> is unchanged.
 int FS::append(std::string filepath1, std::string filepath2)
 {
-    // 1. read root directory
-    dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
-    disk.read(ROOT_BLOCK, (uint8_t *)dir);
+    int max = BLOCK_SIZE / sizeof(dir_entry);
+    int parent1, parent2;
+    std::string name1, name2;
 
-    // 2. find file 1 and file 2
-    int src = -1, dst = -1;
-    for (int i = 0; i < 64; i++)
+    if (!resolvePath(filepath1, parent1, name1) ||
+        !resolvePath(filepath2, parent2, name2))
     {
-        if (dir[i].file_name[0] != '\0')
-        {
-            if (strcmp(dir[i].file_name, filepath1.c_str()) == 0)
-                src = i;
-            if (strcmp(dir[i].file_name, filepath2.c_str()) == 0)
-                dst = i;
-        }
+        std::cout << "File not found\n";
+        return -1;
     }
+
+    dir_entry dir1[max], dir2[max];
+    disk.read(parent1, (uint8_t *)dir1);
+    disk.read(parent2, (uint8_t *)dir2);
+
+    int src = -1, dst = -1;
+
+    for (int i = 0; i < max; i++)
+    {
+        if (strcmp(dir1[i].file_name, name1.c_str()) == 0)
+            src = i;
+        if (strcmp(dir2[i].file_name, name2.c_str()) == 0)
+            dst = i;
+    }
+
     if (src == -1 || dst == -1)
     {
         std::cout << "File not found\n";
+        return -1;
+    }
+
+    // src must be readable
+    if (!(dir1[src].access_rights & READ))
+    {
+        std::cout << "Permission denied\n";
+        return -1;
+    }
+
+    // dst must be writable
+    if (!(dir2[dst].access_rights & WRITE))
+    {
+        std::cout << "Permission denied\n";
         return -1;
     }
 
@@ -727,9 +759,9 @@ int FS::append(std::string filepath1, std::string filepath2)
     disk.read(FAT_BLOCK, (uint8_t *)fat);
 
     // 4. read data from file 1
-    int size1 = dir[src].size;
+    int size1 = dir1[src].size;
     std::vector<uint8_t> data1(size1);
-    int current = dir[src].first_blk;
+    int current = dir1[src].first_blk;
     int offset = 0;
     while (current != FAT_EOF)
     {
@@ -743,7 +775,7 @@ int FS::append(std::string filepath1, std::string filepath2)
         current = fat[current];
     }
     // 5. find end of file 2's block
-    int last = dir[dst].first_blk;
+    int last = dir2[dst].first_blk;
     while (fat[last] != FAT_EOF)
     {
         last = fat[last];
@@ -754,7 +786,7 @@ int FS::append(std::string filepath1, std::string filepath2)
     disk.read(last, last_buf);
 
     // 7. calculate offset in last block
-    int offset2 = dir[dst].size % BLOCK_SIZE;
+    int offset2 = dir2[dst].size % BLOCK_SIZE;
 
     // 8. write as much as possible into last block
     int written = std::min(BLOCK_SIZE - offset2, size1);
@@ -801,13 +833,12 @@ int FS::append(std::string filepath1, std::string filepath2)
     }
 
     // 10. update directory entry for file 2
-    dir[dst].size += size1;
+    dir2[dst].size += size1;
 
-    // 11. write back FAT and root directory to disk
+    // 11. write back FAT and destination directory
     disk.write(FAT_BLOCK, (uint8_t *)fat);
-    disk.write(ROOT_BLOCK, (uint8_t *)dir);
+    disk.write(parent2, (uint8_t *)dir2);
 
-    // std::cout << "FS::append(" << filepath1 << "," << filepath2 << ")\n";
     return 0;
 }
 
@@ -834,7 +865,7 @@ int FS::mkdir(std::string dirpath)
     }
 
     // 2. Läs parent directory
-    dir_entry dir[max]; 
+    dir_entry dir[max];
     disk.read(parent, (uint8_t *)dir);
 
     // 2. check if name already exists
@@ -929,7 +960,7 @@ int FS::cd(std::string path)
 
     // 2. read parent directory
     dir_entry dir[max];
-    disk.read(parent, (uint8_t*)dir);
+    disk.read(parent, (uint8_t *)dir);
 
     // 3. find directory entry
     for (int i = 0; i < max; i++)
@@ -961,7 +992,6 @@ int FS::cd(std::string path)
     return -1;
 }
 
-
 // pwd prints the full path, i.e., from the root directory, to the current
 // directory, including the currect directory name
 int FS::pwd()
@@ -981,7 +1011,7 @@ int FS::pwd()
     while (current != ROOT_BLOCK)
     {
         dir_entry dir[max];
-        disk.read(current, (uint8_t*)dir);
+        disk.read(current, (uint8_t *)dir);
 
         int parent = -1;
 
@@ -1000,7 +1030,7 @@ int FS::pwd()
 
         // leta upp current i parent för att få namnet
         dir_entry parent_dir[max];
-        disk.read(parent, (uint8_t*)parent_dir);
+        disk.read(parent, (uint8_t *)parent_dir);
 
         for (int i = 0; i < max; i++)
         {
@@ -1027,7 +1057,6 @@ int FS::pwd()
 
     return 0;
 }
-
 
 // chmod <accessrights> <filepath> changes the access rights for the
 // file <filepath> to <accessrights>.
@@ -1065,7 +1094,7 @@ int FS::chmod(std::string accessrights, std::string filepath)
 
     // 3. läs parent directory
     dir_entry dir[max];
-    disk.read(parent, (uint8_t*)dir);
+    disk.read(parent, (uint8_t *)dir);
 
     // 4. hitta entry
     for (int i = 0; i < max; i++)
@@ -1074,7 +1103,7 @@ int FS::chmod(std::string accessrights, std::string filepath)
             strcmp(dir[i].file_name, name.c_str()) == 0)
         {
             dir[i].access_rights = rights;
-            disk.write(parent, (uint8_t*)dir);
+            disk.write(parent, (uint8_t *)dir);
             return 0;
         }
     }
