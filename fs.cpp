@@ -335,7 +335,6 @@ int FS::ls()
 // <sourcepath> to a new file <destpath>
 int FS::cp(std::string srcpath, std::string dstpath)
 {
-    const int max = MAX_DIR_ENTRIES;
 
     // ---------- 1) Resolve source ----------
     int src_parent;
@@ -347,10 +346,10 @@ int FS::cp(std::string srcpath, std::string dstpath)
         return -1;
     }
 
-    dir_entry src_dir[max];
+    dir_entry src_dir[MAX_DIR_ENTRIES];
     disk.read(src_parent, (uint8_t *)src_dir);
 
-    int src_idx = findEntryIndex(src_dir, max, src_name);
+    int src_idx = findEntryIndex(src_dir, MAX_DIR_ENTRIES, src_name);
     if (src_idx == -1 || src_dir[src_idx].type == TYPE_DIR)
     {
         std::cout << "Source file not found\n";
@@ -382,7 +381,7 @@ int FS::cp(std::string srcpath, std::string dstpath)
     }
 
     // ---------- 3) Noclobber: destination file must not exist ----------
-    if (findEntryIndex(dst_dir, max, dst_name) != -1)
+    if (findEntryIndex(dst_dir, MAX_DIR_ENTRIES, dst_name) != -1)
     {
         std::cout << "File already exists\n";
         return -1;
@@ -446,9 +445,7 @@ int FS::cp(std::string srcpath, std::string dstpath)
 // or moves the file <sourcepath> to the directory <destpath> (if dest is a directory)
 int FS::mv(std::string srcpath, std::string dstpath)
 {
-    int max = BLOCK_SIZE / sizeof(dir_entry);
-
-    /* ---------- resolve source ---------- */
+    // ---------- 1) Resolve source ----------
     int src_parent;
     std::string src_name;
 
@@ -458,20 +455,10 @@ int FS::mv(std::string srcpath, std::string dstpath)
         return -1;
     }
 
-    dir_entry src_dir[max];
+    dir_entry src_dir[MAX_DIR_ENTRIES];
     disk.read(src_parent, (uint8_t *)src_dir);
 
-    int src_idx = -1;
-    for (int i = 0; i < max; i++)
-    {
-        if (src_dir[i].file_name[0] != '\0' &&
-            strcmp(src_dir[i].file_name, src_name.c_str()) == 0)
-        {
-            src_idx = i;
-            break;
-        }
-    }
-
+    int src_idx = findEntryIndex(src_dir, MAX_DIR_ENTRIES, src_name);
     if (src_idx == -1)
     {
         std::cout << "File not found\n";
@@ -484,7 +471,7 @@ int FS::mv(std::string srcpath, std::string dstpath)
         return -1;
     }
 
-    /* ---------- resolve destination ---------- */
+    // ---------- 2) Resolve destination ----------
     int dst_parent;
     std::string dst_name;
 
@@ -494,61 +481,42 @@ int FS::mv(std::string srcpath, std::string dstpath)
         return -1;
     }
 
-    dir_entry dst_dir[max];
+    dir_entry dst_dir[MAX_DIR_ENTRIES];
     disk.read(dst_parent, (uint8_t *)dst_dir);
 
-    /* ---------- check if destination is a directory ---------- */
-    for (int i = 0; i < max; i++)
+    // If dst_name exists and is a directory => move into it, keep same filename
+    int dst_idx = findEntryIndex(dst_dir, MAX_DIR_ENTRIES, dst_name);
+    if (dst_idx != -1 && dst_dir[dst_idx].type == TYPE_DIR)
     {
-        if (dst_dir[i].file_name[0] != '\0' &&
-            strcmp(dst_dir[i].file_name, dst_name.c_str()) == 0 &&
-            dst_dir[i].type == TYPE_DIR)
-        {
-            // flytt till katalog
-            dst_parent = dst_dir[i].first_blk;
-            disk.read(dst_parent, (uint8_t *)dst_dir);
-            dst_name = src_name;
-            break;
-        }
+        dst_parent = dst_dir[dst_idx].first_blk;
+        disk.read(dst_parent, (uint8_t *)dst_dir);
+        dst_name = src_name;
     }
 
-    /* ---------- noclobber ---------- */
-    for (int i = 0; i < max; i++)
+    // ---------- 3) Noclobber: destination name must not exist ----------
+    if (findEntryIndex(dst_dir, MAX_DIR_ENTRIES, dst_name) != -1)
     {
-        if (dst_dir[i].file_name[0] != '\0' &&
-            strcmp(dst_dir[i].file_name, dst_name.c_str()) == 0)
-        {
-            std::cout << "File already exists\n";
-            return -1;
-        }
+        std::cout << "File already exists\n";
+        return -1;
     }
 
-    /* ---------- hitta ledig plats i destination ---------- */
-    int free_idx = -1;
-    for (int i = 0; i < max; i++)
-    {
-        if (dst_dir[i].file_name[0] == '\0')
-        {
-            free_idx = i;
-            break;
-        }
-    }
-
+    // ---------- 4) Find free slot in destination directory ----------
+    int free_idx = findFreeIndex(dst_dir, MAX_DIR_ENTRIES);
     if (free_idx == -1)
     {
         std::cout << "Directory full\n";
         return -1;
     }
 
-    /* ---------- flytta directory entry ---------- */
+    // ---------- 5) Move directory entry ----------
     dst_dir[free_idx] = src_dir[src_idx];
 
-    strncpy(dst_dir[free_idx].file_name, dst_name.c_str(), MAX_NAME_LEN);
+    std::strncpy(dst_dir[free_idx].file_name, dst_name.c_str(), MAX_NAME_LEN);
     dst_dir[free_idx].file_name[MAX_NAME_LEN] = '\0';
 
-    memset(&src_dir[src_idx], 0, sizeof(dir_entry));
+    std::memset(&src_dir[src_idx], 0, sizeof(dir_entry));
 
-    /* ---------- write back ---------- */
+    // ---------- 6) Write back ----------
     disk.write(src_parent, (uint8_t *)src_dir);
     disk.write(dst_parent, (uint8_t *)dst_dir);
 
