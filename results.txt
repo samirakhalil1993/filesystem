@@ -1,0 +1,123 @@
+Task 1 ...
+Task 1. Implementation of basic file operations
+Implement the following commands:
+
+• format
+Formats the disk, i.e., initializes the FAT and marks all blocks as free except 
+ -block 0 (the root directory)
+ -block 1 (the FAT block).
+
+• create <filename>
+ -Creates a new file with the name filename on the disk.
+ -handle the case when a file is larger than one disk block.
+ -If there already exists a file with the same name, an error should be detected.
+
+• cat <filename>
+Reads the contents of the file filename and prints it on the screen.
+
+• ls
+Lists the contents of the current directory
+
+-----------------------------------------------------------------------------------------------
+Testing format()...
+Executing ls
+Expected output:
+name     size
+Actual output:
+name     type    accessrights    size
+Executing pwd
+Expected output:
+/
+Actual output:
+/
+... done format()
+----------------------------------------
+Testing create(f1)...
+Expected output:
+name     size
+f1       16
+Actual output:
+name     type    accessrights    size
+f1       file    rw-             16
+
+Testing create() with large file...
+Expected output:
+name     size
+f1       16
+f4129    4129
+Actual output:
+name     type    accessrights    size
+f1       file    rw-             16
+f4129    file    rw-             4129
+... done create()
+
+----------------------------------------
+Testing cat(f1)...
+Expected output:
+hej heja hejare
+Actual output:
+hej heja hejare
+--------
+
+Try to cat a non-existing file...
+Expected output:
+... some kind of error message
+Actual output:
+File not found
+Error: cat f2 failed, error code -1
+... done cat()
+
+----------------------------------------
+Checking long file names...
+Formatting disk ...
+55 char names should work...
+Expected output:
+name     size
+AbcdefghijAbcdefghijAbcdefghijAbcdefghijAbcdefghijAbcde  16
+Actual output:
+name     type    accessrights    size
+AbcdefghijAbcdefghijAbcdefghijAbcdefghijAbcdefghijAbcdefile    rw-             16
+
+56 char names should give an error...
+Expected output:
+ ... some error message
+name     size
+AbcdefghijAbcdefghijAbcdefghijAbcdefghijAbcdefghijAbcde  16
+Actual output:
+File name too long
+Error: create AbcdefghijAbcdefghijAbcdefghijAbcdefghijAbcdefghijAbcdeX failed, error code -1
+name     type    accessrights    size
+AbcdefghijAbcdefghijAbcdefghijAbcdefghijAbcdefghijAbcdefile    rw-             16
+----------------------------------------
+
+Testing the number of files that fit in a directory ...
+Formatting disk ...
+BLOCK_SIZE = 4096, sizeof(dir_entry) = 64, 64 dir_entries per disk block.
+Creating 64 files in the root directory...
+Expected output:
+name     size
+f0       16
+f1       16
+f2       16
+...      ...
+f62      16
+f63      16
+Actual output:
+name     type    accessrights    size
+f0       file    rw-             16
+f1       file    rw-             16
+f2       file    rw-             16
+...      ...     ...             ... 
+f62      file    rw-             16
+f63      file    rw-             16
+--------
+
+Adding one more file should give an error...
+Expected output:
+... some kind of error message
+Actual output:
+Directory full
+Error: create fx failed, error code -1
+----------------------------------------
+... Task 1 done
+================================================================================

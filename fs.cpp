@@ -5,16 +5,44 @@
 #include <cstring>
 #include <sstream>
 
-FS::FS()
+// ls lists the content in the current directory (files and sub-directories)
+#include <iomanip> // högst upp i filen
+
+// FS implementation notes:
+// - Directory entries live in one block; max entries = BLOCK_SIZE / sizeof(dir_entry)
+// - Names are stored in dir_entry::file_name with max length 55 (+ '\0')
+// - FAT uses 16-bit entries; FAT_FREE and FAT_EOF mark free/end-of-chain
+
+static constexpr int MAX_NAME_LEN = 55;
+static constexpr int MAX_DIR_ENTRIES = BLOCK_SIZE / sizeof(dir_entry);
+
+static int findEntryIndex(dir_entry *dir, int max, const std::string &name)
 {
-    std::cout << "FS::FS()... Creating file system\n";
+    for (int i = 0; i < max; i++)
+    {
+        if (dir[i].file_name[0] != '\0' &&
+            std::strcmp(dir[i].file_name, name.c_str()) == 0)
+        {
+            return i;
+        }
+    }
+    return -1;
 }
 
-FS::~FS()
+static int findFreeIndex(dir_entry *dir, int max)
 {
+    for (int i = 0; i < max; i++)
+    {
+        if (dir[i].file_name[0] == '\0')
+            return i;
+    }
+    return -1;
 }
 
-std::vector<std::string> splitPath(const std::string &path)
+// Helper function that splits a file system path into individual directory or file names.
+// The path is separated using '/' and empty components are ignored.
+
+static std::vector<std::string> splitPath(const std::string &path)
 {
     std::vector<std::string> parts;
     std::stringstream ss(path);
@@ -28,98 +56,77 @@ std::vector<std::string> splitPath(const std::string &path)
     return parts;
 }
 
+// Resolves a given absolute or relative path by traversing the file system.
+// On success, it returns the block number of the parent directory and the
+// final file or directory name. Returns false if the path is invalid.
+
 bool FS::resolvePath(const std::string &path,
                      int &parent_block,
                      std::string &name)
 {
-    int max = BLOCK_SIZE / sizeof(dir_entry);
-
-    // 1. Tom path → fel
     if (path.empty())
         return false;
 
-    // 2. Dela path i delar
     std::vector<std::string> parts = splitPath(path);
+    if (parts.empty())
+        return false; // keeps behavior safe for "/" cases
 
-    // 3. Bestäm startpunkt
     int current = (path[0] == '/') ? ROOT_BLOCK : cwd_blk;
 
-    // 4. Gå igenom alla delar UTOM sista
+    // Traverse all components except the last => find the parent directory block
     for (int i = 0; i < (int)parts.size() - 1; i++)
     {
+        dir_entry dir[MAX_DIR_ENTRIES];
+        disk.read(current, (uint8_t *)dir);
+
         if (parts[i] == "..")
         {
-            // Gå till parent via ".."
-            dir_entry dir[max];
-            disk.read(current, (uint8_t *)dir);
-
-            bool found = false;
-            for (int j = 0; j < max; j++)
-            {
-                if (strcmp(dir[j].file_name, "..") == 0)
-                {
-                    current = dir[j].first_blk;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
+            int idx = findEntryIndex(dir, MAX_DIR_ENTRIES, "..");
+            if (idx == -1)
                 return false;
-        }
-        else
-        {
-            // Leta efter subdirectory
-            dir_entry dir[max];
-            disk.read(current, (uint8_t *)dir);
 
-            bool found = false;
-            for (int j = 0; j < max; j++)
-            {
-                if (dir[j].file_name[0] != '\0' &&
-                    strcmp(dir[j].file_name, parts[i].c_str()) == 0 &&
-                    dir[j].type == TYPE_DIR)
-                {
-                    current = dir[j].first_blk;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-                return false;
+            current = dir[idx].first_blk;
+            continue;
         }
+
+        int idx = findEntryIndex(dir, MAX_DIR_ENTRIES, parts[i]);
+        if (idx == -1 || dir[idx].type != TYPE_DIR)
+            return false;
+
+        current = dir[idx].first_blk;
     }
 
-    // 5. Returnera parent + sista namnet
     parent_block = current;
     name = parts.back();
     return true;
+}
+
+FS::FS()
+{
+    std::cout << "FS::FS()... Creating file system\n";
+}
+
+FS::~FS()
+{
 }
 
 // formats the disk, i.e., creates an empty file system
 int FS::format()
 {
 
-    // 1. Markera alla FAT-poster som fria
     for (int i = 0; i < BLOCK_SIZE / 2; i++)
     {
         fat[i] = FAT_FREE;
     }
 
-    // 2. Reservera root (0) och FAT (1)
     fat[ROOT_BLOCK] = FAT_EOF;
     fat[FAT_BLOCK] = FAT_EOF;
 
-    // 3. Skriv FAT till disk (block 1)
     disk.write(FAT_BLOCK, (uint8_t *)fat);
-
-    // 4. Skapa tom root directory
     uint8_t empty_dir[BLOCK_SIZE] = {0};
-
-    // 5. Skriv root directory till disk (block 0)
     disk.write(ROOT_BLOCK, empty_dir);
-
     cwd_blk = ROOT_BLOCK;
-    // std::cout << "FS::format()\n";
+
     return 0;
 }
 
@@ -127,40 +134,22 @@ int FS::format()
 // written on the following rows (ended with an empty row)
 int FS::create(std::string filepath)
 {
-    if (filepath.length() > 55)
+    if (filepath.length() > MAX_NAME_LEN)
     {
         std::cout << "File name too long\n";
         return -1;
     }
 
-    // 1. Läs current directory
-
     dir_entry dir[BLOCK_SIZE / sizeof(dir_entry)];
     disk.read(cwd_blk, (uint8_t *)dir);
 
-    // 2. Kolla om filen redan finns
-
-    int max = BLOCK_SIZE / sizeof(dir_entry);
-    for (int i = 0; i < max; i++)
+    if (findEntryIndex(dir, MAX_DIR_ENTRIES, filepath) != -1)
     {
-        if (strcmp(dir[i].file_name, filepath.c_str()) == 0)
-        {
-            std::cout << "File already exists\n";
-            return -1;
-        }
+        std::cout << "File already exists\n";
+        return -1;
     }
 
-    // 3. Hitta en ledig post i root directory
-    int free_index = -1;
-    for (int i = 0; i < 64; i++)
-    {
-        if (dir[i].file_name[0] == '\0')
-        {
-            free_index = i;
-            break;
-        }
-    }
-
+    int free_index = findFreeIndex(dir, MAX_DIR_ENTRIES);
     if (free_index == -1)
     {
         std::cout << "Directory full\n";
@@ -185,7 +174,8 @@ int FS::create(std::string filepath)
 
     // 7. hitta lediga block i FAT
     std::vector<int> blocks;
-    for (int i = 2; i < BLOCK_SIZE / 2 && blocks.size() < blocks_needed; i++)
+    for (int i = 2; i < disk.get_no_blocks() && (int)blocks.size() < blocks_needed; i++)
+
     {
         if (fat[i] == FAT_FREE)
             blocks.push_back(i);
@@ -215,8 +205,8 @@ int FS::create(std::string filepath)
     }
 
     // 11. skapa directory entry
-    strncpy(dir[free_index].file_name, filepath.c_str(), 55);
-    dir[free_index].file_name[55] = '\0';
+    strncpy(dir[free_index].file_name, filepath.c_str(), MAX_NAME_LEN);
+    dir[free_index].file_name[MAX_NAME_LEN] = '\0';
     dir[free_index].size = size;
     dir[free_index].first_blk = blocks[0];
     dir[free_index].type = TYPE_FILE;
@@ -233,117 +223,109 @@ int FS::create(std::string filepath)
 // cat <filepath> reads the content of a file and prints it on the screen
 int FS::cat(std::string path)
 {
-    int max = BLOCK_SIZE / sizeof(dir_entry);
 
     int parent;
     std::string name;
 
-    // 1. resolve path
+    // 1) Resolve path -> parent directory block + entry name
     if (!resolvePath(path, parent, name))
     {
         std::cout << "File not found\n";
         return -1;
     }
 
-    // 2. read parent directory
-    dir_entry dir[max];
+    // 2) Read parent directory
+    dir_entry dir[MAX_DIR_ENTRIES];
     disk.read(parent, (uint8_t *)dir);
 
-    // 3. find file
-    for (int i = 0; i < max; i++)
+    // 3) Find entry
+    int idx = findEntryIndex(dir, MAX_DIR_ENTRIES, name);
+    if (idx == -1)
     {
-        if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, name.c_str()) == 0)
-        {
-            // must be a file
-            if (dir[i].type == TYPE_DIR)
-            {
-                std::cout << "Not a file\n";
-                return -1;
-            }
-
-            // 4. check READ permission
-            if (!(dir[i].access_rights & READ))
-            {
-                std::cout << "Permission denied\n";
-                return -1;
-            }
-
-            // 5. read FAT
-            disk.read(FAT_BLOCK, (uint8_t *)fat);
-
-            int cur = dir[i].first_blk;
-            int remaining = dir[i].size;
-
-            // 6. read blocks
-            while (cur != FAT_EOF && remaining > 0)
-            {
-                uint8_t buf[BLOCK_SIZE];
-                disk.read(cur, buf);
-
-                int n = std::min(BLOCK_SIZE, remaining);
-                std::cout.write((char *)buf, n);
-
-                remaining -= n;
-                cur = fat[cur];
-            }
-
-            return 0;
-        }
+        std::cout << "File not found\n";
+        return -1;
     }
 
-    std::cout << "File not found\n";
-    return -1;
-}
+    dir_entry &entry = dir[idx];
 
-// ls lists the content in the current directory (files and sub-directories)
-#include <iomanip>   // högst upp i filen
+    // 4) Must be a file
+    if (entry.type == TYPE_DIR)
+    {
+        std::cout << "Not a file\n";
+        return -1;
+    }
+
+    // 5) Check READ permission
+    if (!(entry.access_rights & READ))
+    {
+        std::cout << "Permission denied\n";
+        return -1;
+    }
+
+    // 6) Read FAT
+    disk.read(FAT_BLOCK, (uint8_t *)fat);
+
+    int cur = entry.first_blk;
+    int remaining = entry.size;
+
+    // 7) Read blocks following FAT chain
+    while (cur != FAT_EOF && remaining > 0)
+    {
+        uint8_t buf[BLOCK_SIZE];
+        disk.read(cur, buf);
+
+        int n = std::min(BLOCK_SIZE, remaining);
+        std::cout.write((char *)buf, n);
+
+        remaining -= n;
+        cur = fat[cur];
+    }
+
+    return 0;
+}
 
 int FS::ls()
 {
-    int max = BLOCK_SIZE / sizeof(dir_entry);
-    dir_entry dir[max];
-    disk.read(cwd_blk, (uint8_t*)dir);
+    dir_entry dir[MAX_DIR_ENTRIES];
+    disk.read(cwd_blk, (uint8_t *)dir);
 
-    std::cout << "name     type    accessrights    size\n";
+    std::cout << std::left
+              << std::setw(17) << "name"
+              << std::setw(11) << "type"
+              << std::setw(16) << "accessrights"
+              << "size\n";
 
-    for (int i = 0; i < max; i++)
+    for (int i = 0; i < MAX_DIR_ENTRIES; i++)
     {
         if (dir[i].file_name[0] == '\0')
             continue;
 
-        std::cout << std::left
-                  << std::setw(9) << dir[i].file_name
-                  << std::setw(8) << (dir[i].type == TYPE_DIR ? "dir" : "file");
-
         uint8_t r = dir[i].access_rights;
 
-        // access rights
+        std::string rights;
         if (dir[i].type == TYPE_FILE)
         {
-            // files: only rw-
-            std::cout
-                << ((r & READ)  ? 'r' : '-')
-                << ((r & WRITE) ? 'w' : '-')
-                << "      ";
+            rights += (r & READ) ? 'r' : '-';
+            rights += (r & WRITE) ? 'w' : '-';
+            rights += '-';
         }
         else
         {
-            // directories: rwx
-            std::cout
-                << ((r & READ)    ? 'r' : '-')
-                << ((r & WRITE)   ? 'w' : '-')
-                << ((r & EXECUTE) ? 'x' : '-')
-                << "     ";
+            rights += (r & READ) ? 'r' : '-';
+            rights += (r & WRITE) ? 'w' : '-';
+            rights += (r & EXECUTE) ? 'x' : '-';
         }
 
-        // size
-        if (dir[i].type == TYPE_DIR)
-            std::cout << "-";
-        else
-            std::cout << dir[i].size;
+        std::cout << std::left
+                  << std::setw(17) << dir[i].file_name
+                  << std::setw(11) << (dir[i].type == TYPE_DIR ? "dir" : "file")
+                  << std::setw(16) << rights;
 
-        std::cout << "\n";
+        if (dir[i].type == TYPE_DIR)
+            std::cout << "-\n";
+        else
+
+            std::cout << dir[i].size << "\n";
     }
 
     return 0;
@@ -353,12 +335,12 @@ int FS::ls()
 // <sourcepath> to a new file <destpath>
 int FS::cp(std::string srcpath, std::string dstpath)
 {
-    int max = BLOCK_SIZE / sizeof(dir_entry);
+    const int max = MAX_DIR_ENTRIES;
 
+    // ---------- 1) Resolve source ----------
     int src_parent;
     std::string src_name;
 
-    // 1. Resolve source
     if (!resolvePath(srcpath, src_parent, src_name))
     {
         std::cout << "Source file not found\n";
@@ -368,24 +350,16 @@ int FS::cp(std::string srcpath, std::string dstpath)
     dir_entry src_dir[max];
     disk.read(src_parent, (uint8_t *)src_dir);
 
-    dir_entry *src = nullptr;
-    for (int i = 0; i < max; i++)
-    {
-        if (src_dir[i].file_name[0] != '\0' &&
-            strcmp(src_dir[i].file_name, src_name.c_str()) == 0)
-        {
-            src = &src_dir[i];
-            break;
-        }
-    }
-
-    if (!src || src->type == TYPE_DIR)
+    int src_idx = findEntryIndex(src_dir, max, src_name);
+    if (src_idx == -1 || src_dir[src_idx].type == TYPE_DIR)
     {
         std::cout << "Source file not found\n";
         return -1;
     }
 
-    // 2. Resolve destination
+    dir_entry &src_entry = src_dir[src_idx];
+
+    // ---------- 2) Resolve destination ----------
     int dst_parent;
     std::string dst_name;
 
@@ -398,86 +372,70 @@ int FS::cp(std::string srcpath, std::string dstpath)
     dir_entry dst_dir[max];
     disk.read(dst_parent, (uint8_t *)dst_dir);
 
-    // 3. If destination is an existing directory → copy inside it
-    for (int i = 0; i < max; i++)
+    // If destination name exists and is a directory -> copy into it using same src name
+    int dst_idx = findEntryIndex(dst_dir, max, dst_name);
+    if (dst_idx != -1 && dst_dir[dst_idx].type == TYPE_DIR)
     {
-        if (dst_dir[i].file_name[0] != '\0' &&
-            strcmp(dst_dir[i].file_name, dst_name.c_str()) == 0 &&
-            dst_dir[i].type == TYPE_DIR)
-        {
-            dst_parent = dst_dir[i].first_blk;
-            disk.read(dst_parent, (uint8_t *)dst_dir);
-            dst_name = src_name;
-            break;
-        }
+        dst_parent = dst_dir[dst_idx].first_blk;
+        disk.read(dst_parent, (uint8_t *)dst_dir);
+        dst_name = src_name;
     }
 
-    // 4. Check noclobber
-    for (int i = 0; i < max; i++)
+    // ---------- 3) Noclobber: destination file must not exist ----------
+    if (findEntryIndex(dst_dir, max, dst_name) != -1)
     {
-        if (dst_dir[i].file_name[0] != '\0' &&
-            strcmp(dst_dir[i].file_name, dst_name.c_str()) == 0)
-        {
-            std::cout << "File already exists\n";
-            return -1;
-        }
+        std::cout << "File already exists\n";
+        return -1;
     }
 
-    // 5. Find free entry in destination directory
-    int free_idx = -1;
-    for (int i = 0; i < max; i++)
-    {
-        if (dst_dir[i].file_name[0] == '\0')
-        {
-            free_idx = i;
-            break;
-        }
-    }
-
+    // ---------- 4) Find free entry slot ----------
+    int free_idx = findFreeIndex(dst_dir, max);
     if (free_idx == -1)
     {
         std::cout << "Directory full\n";
         return -1;
     }
 
-    // 6. Read FAT
+    // ---------- 5) Allocate blocks ----------
     disk.read(FAT_BLOCK, (uint8_t *)fat);
 
-    int size = src->size;
+    int size = src_entry.size;
     int blocks_needed = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
     std::vector<int> blocks;
-    for (int i = 2; i < disk.get_no_blocks() && blocks.size() < blocks_needed; i++)
+    for (int i = 2; i < disk.get_no_blocks() && (int)blocks.size() < blocks_needed; i++)
     {
         if (fat[i] == FAT_FREE)
             blocks.push_back(i);
     }
 
-    if (blocks.size() < blocks_needed)
+    if ((int)blocks.size() < blocks_needed)
     {
         std::cout << "Not enough disk space\n";
         return -1;
     }
 
-    // 7. Copy data
-    int cur = src->first_blk;
-    for (int i = 0; i < blocks.size(); i++)
+    // ---------- 6) Copy data block-by-block and link FAT ----------
+    int cur = src_entry.first_blk;
+
+    for (int i = 0; i < (int)blocks.size(); i++)
     {
         uint8_t buf[BLOCK_SIZE] = {0};
         disk.read(cur, buf);
         disk.write(blocks[i], buf);
-        fat[blocks[i]] = (i + 1 < blocks.size()) ? blocks[i + 1] : FAT_EOF;
-        cur = fat[cur];
+
+        fat[blocks[i]] = (i + 1 < (int)blocks.size()) ? blocks[i + 1] : FAT_EOF;
+        cur = fat[cur]; // follow source chain
     }
 
-    // 8. Create new directory entry
-    strncpy(dst_dir[free_idx].file_name, dst_name.c_str(), 55);
-    dst_dir[free_idx].file_name[55] = '\0';
+    // ---------- 7) Create destination directory entry ----------
+    std::strncpy(dst_dir[free_idx].file_name, dst_name.c_str(), MAX_NAME_LEN);
+    dst_dir[free_idx].file_name[MAX_NAME_LEN] = '\0';
     dst_dir[free_idx].type = TYPE_FILE;
     dst_dir[free_idx].size = size;
     dst_dir[free_idx].first_blk = blocks[0];
 
-    // 9. Write back
+    // ---------- 8) Persist ----------
     disk.write(dst_parent, (uint8_t *)dst_dir);
     disk.write(FAT_BLOCK, (uint8_t *)fat);
 
@@ -585,8 +543,8 @@ int FS::mv(std::string srcpath, std::string dstpath)
     /* ---------- flytta directory entry ---------- */
     dst_dir[free_idx] = src_dir[src_idx];
 
-    strncpy(dst_dir[free_idx].file_name, dst_name.c_str(), 55);
-    dst_dir[free_idx].file_name[55] = '\0';
+    strncpy(dst_dir[free_idx].file_name, dst_name.c_str(), MAX_NAME_LEN);
+    dst_dir[free_idx].file_name[MAX_NAME_LEN] = '\0';
 
     memset(&src_dir[src_idx], 0, sizeof(dir_entry));
 
@@ -858,7 +816,7 @@ int FS::mkdir(std::string dirpath)
         return -1;
     }
 
-    if (name.length() > 55)
+    if (name.length() > MAX_NAME_LEN)
     {
         std::cout << "Directory name too long\n";
         return -1;
@@ -923,16 +881,16 @@ int FS::mkdir(std::string dirpath)
     dir_entry newdir[BLOCK_SIZE / sizeof(dir_entry)];
     memset(newdir, 0, sizeof(newdir));
 
-    strncpy(newdir[0].file_name, "..", 55);
-    newdir[0].file_name[55] = '\0';
+    strncpy(newdir[0].file_name, "..", MAX_NAME_LEN);
+    newdir[0].file_name[MAX_NAME_LEN] = '\0';
     newdir[0].type = TYPE_DIR;
     newdir[0].first_blk = parent;
 
     disk.write(new_blk, (uint8_t *)newdir);
 
     // 7. add directory entry to current directory
-    strncpy(dir[free_idx].file_name, name.c_str(), 55);
-    dir[free_idx].file_name[55] = '\0';
+    strncpy(dir[free_idx].file_name, name.c_str(), MAX_NAME_LEN);
+    dir[free_idx].file_name[MAX_NAME_LEN] = '\0';
     dir[free_idx].type = TYPE_DIR;
     dir[free_idx].first_blk = new_blk;
 
