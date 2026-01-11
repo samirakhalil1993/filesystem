@@ -39,6 +39,17 @@ static int findFreeIndex(dir_entry *dir, int max)
     return -1;
 }
 
+static bool isFile(const dir_entry& e)
+{
+    return e.type == TYPE_FILE;
+}
+
+static bool isDir(const dir_entry& e)
+{
+    return e.type == TYPE_DIR;
+}
+
+
 // Helper function that splits a file system path into individual directory or file names.
 // The path is separated using '/' and empty components are ignored.
 
