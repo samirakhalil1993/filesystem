@@ -603,6 +603,9 @@ int FS::rm(std::string path)
 
     return 0;
 }
+
+// append <filepath1> <filepath2> appends the contents of file <filepath1> to
+// the end of file <filepath2>. The file <filepath1> is unchanged.
 int FS::append(std::string filepath1, std::string filepath2)
 {
     int parent1, parent2;
@@ -735,13 +738,11 @@ int FS::append(std::string filepath1, std::string filepath2)
 // in the current directory
 int FS::mkdir(std::string dirpath)
 {
-    int max = BLOCK_SIZE / sizeof(dir_entry);
-
-    // 1. Resolve path
-    int parent;
+    int parentBlk;
     std::string name;
 
-    if (!resolvePath(dirpath, parent, name))
+    // 1) Resolve path -> where to create + new directory name
+    if (!resolvePath(dirpath, parentBlk, name))
     {
         std::cout << "Directory not found\n";
         return -1;
@@ -753,81 +754,73 @@ int FS::mkdir(std::string dirpath)
         return -1;
     }
 
-    // 2. Läs parent directory
-    dir_entry dir[max];
-    disk.read(parent, (uint8_t *)dir);
+    // 2) Read parent directory block
+    dir_entry parentDir[MAX_DIR_ENTRIES];
+    disk.read(parentBlk, (uint8_t*)parentDir);
 
-    // 2. check if name already exists
-    for (int i = 0; i < max; i++)
+    // 3) Name must not already exist
+    int existing = findEntryIndex(parentDir, MAX_DIR_ENTRIES, name);
+    if (existing != -1)
     {
-        if (strcmp(dir[i].file_name, name.c_str()) == 0)
-        {
-            if (dir[i].type == TYPE_DIR)
-                std::cout << "Directory already exists\n";
-            else
-                std::cout << "File with same name exists\n";
-            return -1;
-        }
+        if (parentDir[existing].type == TYPE_DIR)
+            std::cout << "Directory already exists\n";
+        else
+            std::cout << "File with same name exists\n";
+        return -1;
     }
 
-    // 3. find free directory entry
-    int free_idx = -1;
-    for (int i = 0; i < max; i++)
-    {
-        if (dir[i].file_name[0] == '\0')
-        {
-            free_idx = i;
-            break;
-        }
-    }
-
+    // 4) Find free slot in parent directory
+    int free_idx = findFreeIndex(parentDir, MAX_DIR_ENTRIES);
     if (free_idx == -1)
     {
         std::cout << "Directory full\n";
         return -1;
     }
 
-    // 4. read FAT
-    disk.read(FAT_BLOCK, (uint8_t *)fat);
+    // 5) Read FAT and allocate a free block for the new directory
+    disk.read(FAT_BLOCK, (uint8_t*)fat);
 
-    // 5. find free block
-    int new_blk = -1;
+    int newDirBlk = -1;
     for (int i = 2; i < disk.get_no_blocks(); i++)
     {
         if (fat[i] == FAT_FREE)
         {
-            new_blk = i;
-            fat[i] = FAT_EOF;
+            newDirBlk = i;
+            fat[i] = FAT_EOF;   // mark block as used (end of chain)
             break;
         }
     }
 
-    if (new_blk == -1)
+    if (newDirBlk == -1)
     {
         std::cout << "No free blocks\n";
         return -1;
     }
 
-    // 6. create new directory block
-    dir_entry newdir[BLOCK_SIZE / sizeof(dir_entry)];
-    memset(newdir, 0, sizeof(newdir));
+    // 6) Create the new directory block content:
+    //    first entry ".." points to the parent directory block
+    dir_entry newDir[MAX_DIR_ENTRIES];
+    std::memset(newDir, 0, sizeof(newDir));
 
-    strncpy(newdir[0].file_name, "..", MAX_NAME_LEN);
-    newdir[0].file_name[MAX_NAME_LEN] = '\0';
-    newdir[0].type = TYPE_DIR;
-    newdir[0].first_blk = parent;
+    std::strncpy(newDir[0].file_name, "..", MAX_NAME_LEN);
+    newDir[0].file_name[MAX_NAME_LEN] = '\0';
+    newDir[0].type = TYPE_DIR;
+    newDir[0].first_blk = parentBlk;
 
-    disk.write(new_blk, (uint8_t *)newdir);
+    disk.write(newDirBlk, (uint8_t*)newDir);
 
-    // 7. add directory entry to current directory
-    strncpy(dir[free_idx].file_name, name.c_str(), MAX_NAME_LEN);
-    dir[free_idx].file_name[MAX_NAME_LEN] = '\0';
-    dir[free_idx].type = TYPE_DIR;
-    dir[free_idx].first_blk = new_blk;
+    // 7) Add directory entry into the parent directory
+    std::strncpy(parentDir[free_idx].file_name, name.c_str(), MAX_NAME_LEN);
+    parentDir[free_idx].file_name[MAX_NAME_LEN] = '\0';
+    parentDir[free_idx].type = TYPE_DIR;
+    parentDir[free_idx].first_blk = newDirBlk;
 
-    // 8. write back
-    disk.write(parent, (uint8_t *)dir);
-    disk.write(FAT_BLOCK, (uint8_t *)fat);
+    // (Optional) if your system expects directory permissions:
+    // parentDir[free_idx].access_rights = READ | WRITE | EXECUTE;
+
+    // 8) Write back parent directory and FAT
+    disk.write(parentBlk, (uint8_t*)parentDir);
+    disk.write(FAT_BLOCK, (uint8_t*)fat);
 
     return 0;
 }
@@ -835,98 +828,84 @@ int FS::mkdir(std::string dirpath)
 // cd <dirpath> changes the current (working) directory to the directory named <dirpath>
 int FS::cd(std::string path)
 {
-    int max = BLOCK_SIZE / sizeof(dir_entry);
-
-    int parent;
+    int parentBlk;
     std::string name;
 
-    // 1. resolve path
-    if (!resolvePath(path, parent, name))
+    // 1) Resolve path -> parent directory block + target name
+    if (!resolvePath(path, parentBlk, name))
     {
         std::cout << "Directory not found\n";
         return -1;
     }
 
-    // 2. read parent directory
-    dir_entry dir[max];
-    disk.read(parent, (uint8_t *)dir);
+    // 2) Read parent directory
+    dir_entry dir[MAX_DIR_ENTRIES];
+    disk.read(parentBlk, (uint8_t*)dir);
 
-    // 3. find directory entry
-    for (int i = 0; i < max; i++)
+    // 3) Find the entry
+    int idx = findEntryIndex(dir, MAX_DIR_ENTRIES, name);
+    if (idx == -1)
     {
-        if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, name.c_str()) == 0)
-        {
-            // must be directory
-            if (dir[i].type != TYPE_DIR)
-            {
-                std::cout << "Not a directory\n";
-                return -1;
-            }
-
-            // 4. check EXECUTE permission
-            if (!(dir[i].access_rights & EXECUTE))
-            {
-                std::cout << "Permission denied\n";
-                return -1;
-            }
-
-            // 5. change current directory
-            cwd_blk = dir[i].first_blk;
-            return 0;
-        }
+        std::cout << "Directory not found\n";
+        return -1;
     }
 
-    std::cout << "Directory not found\n";
-    return -1;
+    dir_entry& entry = dir[idx];
+
+    // 4) Must be a directory
+    if (entry.type != TYPE_DIR)
+    {
+        std::cout << "Not a directory\n";
+        return -1;
+    }
+
+    // 5) Need EXECUTE permission to enter
+    if (!(entry.access_rights & EXECUTE))
+    {
+        std::cout << "Permission denied\n";
+        return -1;
+    }
+
+    // 6) Change current working directory
+    cwd_blk = entry.first_blk;
+    return 0;
 }
 
 // pwd prints the full path, i.e., from the root directory, to the current
 // directory, including the currect directory name
 int FS::pwd()
 {
-    int max = BLOCK_SIZE / sizeof(dir_entry);
-
-    // Specialfall: root
     if (cwd_blk == ROOT_BLOCK)
     {
         std::cout << "/\n";
         return 0;
     }
 
-    std::vector<std::string> path;
+    std::vector<std::string> parts;
     int current = cwd_blk;
 
     while (current != ROOT_BLOCK)
     {
-        dir_entry dir[max];
-        disk.read(current, (uint8_t *)dir);
+        dir_entry curDir[MAX_DIR_ENTRIES];
+        disk.read(current, (uint8_t*)curDir);
 
-        int parent = -1;
-
-        // hitta ".."
-        for (int i = 0; i < max; i++)
-        {
-            if (strcmp(dir[i].file_name, "..") == 0)
-            {
-                parent = dir[i].first_blk;
-                break;
-            }
-        }
-
-        if (parent == -1)
+        // 1) Find parent using ".."
+        int parentIdx = findEntryIndex(curDir, MAX_DIR_ENTRIES, "..");
+        if (parentIdx == -1)
             break;
 
-        // leta upp current i parent för att få namnet
-        dir_entry parent_dir[max];
-        disk.read(parent, (uint8_t *)parent_dir);
+        int parent = curDir[parentIdx].first_blk;
 
-        for (int i = 0; i < max; i++)
+        // 2) Find the name of current directory inside parent directory
+        dir_entry parentDir[MAX_DIR_ENTRIES];
+        disk.read(parent, (uint8_t*)parentDir);
+
+        for (int i = 0; i < MAX_DIR_ENTRIES; i++)
         {
-            if (parent_dir[i].type == TYPE_DIR &&
-                parent_dir[i].first_blk == current)
+            if (parentDir[i].type == TYPE_DIR &&
+                parentDir[i].first_blk == current)
             {
-                path.push_back(parent_dir[i].file_name);
+                parts.push_back(parentDir[i].file_name);
                 break;
             }
         }
@@ -934,13 +913,12 @@ int FS::pwd()
         current = parent;
     }
 
-    // skriv ut path baklänges
+    // print in reverse order
     std::cout << "/";
-    for (int i = path.size() - 1; i >= 0; i--)
+    for (int i = (int)parts.size() - 1; i >= 0; i--)
     {
-        std::cout << path[i];
-        if (i > 0)
-            std::cout << "/";
+        std::cout << parts[i];
+        if (i > 0) std::cout << "/";
     }
     std::cout << "\n";
 
@@ -951,9 +929,7 @@ int FS::pwd()
 // file <filepath> to <accessrights>.
 int FS::chmod(std::string accessrights, std::string filepath)
 {
-    int max = BLOCK_SIZE / sizeof(dir_entry);
-
-    // 1. konvertera accessrights till int
+    // 1) Convert accessrights to int
     int rights;
     try
     {
@@ -971,32 +947,29 @@ int FS::chmod(std::string accessrights, std::string filepath)
         return -1;
     }
 
-    // 2. resolve path
-    int parent;
+    // 2) Resolve path -> parent directory block + entry name
+    int parentBlk;
     std::string name;
 
-    if (!resolvePath(filepath, parent, name))
+    if (!resolvePath(filepath, parentBlk, name))
     {
         std::cout << "File not found\n";
         return -1;
     }
 
-    // 3. läs parent directory
-    dir_entry dir[max];
-    disk.read(parent, (uint8_t *)dir);
+    // 3) Read parent directory
+    dir_entry dir[MAX_DIR_ENTRIES];
+    disk.read(parentBlk, (uint8_t*)dir);
 
-    // 4. hitta entry
-    for (int i = 0; i < max; i++)
+    // 4) Find entry and update rights
+    int idx = findEntryIndex(dir, MAX_DIR_ENTRIES, name);
+    if (idx == -1)
     {
-        if (dir[i].file_name[0] != '\0' &&
-            strcmp(dir[i].file_name, name.c_str()) == 0)
-        {
-            dir[i].access_rights = rights;
-            disk.write(parent, (uint8_t *)dir);
-            return 0;
-        }
+        std::cout << "File not found\n";
+        return -1;
     }
 
-    std::cout << "File not found\n";
-    return -1;
+    dir[idx].access_rights = rights;
+    disk.write(parentBlk, (uint8_t*)dir);
+    return 0;
 }
